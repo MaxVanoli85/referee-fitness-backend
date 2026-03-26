@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 3000;
 
 // Allow requests from your GitHub Pages site and localhost for testing
 const ALLOWED_ORIGINS = [
-  'https://yourusername.github.io',   // ← replace with your actual GitHub Pages URL
+  'https://MaxVanoli85.github.io',   // ← replace with your actual GitHub Pages URL
   'http://localhost',
   'http://127.0.0.1',
   'null'  // file:// during local testing
