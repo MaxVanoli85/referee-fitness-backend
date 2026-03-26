@@ -1,0 +1,12 @@
+{
+  "name": "referee-fitness-backend",
+  "version": "1.0.0",
+  "description": "Strava OAuth backend for Referee Fitness Monitor",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
