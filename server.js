@@ -10,13 +10,22 @@ const CLIENT_SECRET = '49a68dd36016ce760b6d5d3b69173c0f8ae41d5d';
 
 const PORT = process.env.PORT || 3000;
 
-// Allow requests from your GitHub Pages site and localhost for testing
 const ALLOWED_ORIGINS = [
-  'https://MaxVanoli85.github.io',   // ← replace with your actual GitHub Pages URL
+  'https://maxvanoli85.github.io',
   'http://localhost',
   'http://127.0.0.1',
-  'null'  // file:// during local testing
+  'null'
 ];
+
+// ── Keep-alive: ping ourselves every 10 minutes so Render never sleeps ──────
+const SELF_URL = process.env.RENDER_EXTERNAL_URL || 'https://referee-fitness-backend.onrender.com';
+setInterval(() => {
+  https.get(SELF_URL, (res) => {
+    console.log(`Keep-alive ping: ${res.statusCode}`);
+  }).on('error', (e) => {
+    console.log(`Keep-alive error: ${e.message}`);
+  });
+}, 10 * 60 * 1000); // every 10 minutes
 
 function setCORS(req, res) {
   const origin = req.headers.origin || '';
@@ -70,10 +79,8 @@ function send(res, status, data) {
 const server = http.createServer(async (req, res) => {
   setCORS(req, res);
 
-  // Preflight
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
-  // Health check
   if (req.method === 'GET' && req.url === '/') {
     send(res, 200, { status: 'ok', service: 'Referee Fitness backend' }); return;
   }
@@ -133,4 +140,5 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Referee Fitness backend running on port ${PORT}`);
+  console.log(`Keep-alive pinging ${SELF_URL} every 10 minutes`);
 });
