@@ -255,6 +255,33 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── Referee: push activities ────────────────────────────────────────────
+  if (req.method === 'POST' && req.url === '/referee/push') {
+    try {
+      const { stravaId, activities } = await readBody(req);
+      if (!stravaId || !activities) { send(res, 400, { error: 'Missing stravaId or activities' }); return; }
+
+      // Find referee by stravaId
+      let ref = DB.referees.find(r => r.stravaId === stravaId);
+
+      // If not found by stravaId, try to match by token (first connected referee without stravaId)
+      if (!ref) {
+        ref = DB.referees.find(r => r.token && !r.stravaId);
+      }
+
+      if (!ref) { send(res, 404, { error: 'Referee not found' }); return; }
+
+      ref.stravaId   = stravaId;
+      ref.activities = activities;
+      ref.lastSync   = new Date().toISOString();
+      saveData(DB);
+      send(res, 200, { ok: true, name: ref.name, count: activities.length });
+    } catch(e) {
+      send(res, 500, { error: e.message });
+    }
+    return;
+  }
+
   send(res, 404, { error: 'Not found' });
 });
 
