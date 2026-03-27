@@ -258,23 +258,45 @@ const server = http.createServer(async (req, res) => {
   // ── Referee: push activities ────────────────────────────────────────────
   if (req.method === 'POST' && req.url === '/referee/push') {
     try {
-      const { stravaId, activities } = await readBody(req);
+      const { stravaId, stravaFirstname, stravaLastname, activities, refereeId } = await readBody(req);
       if (!stravaId || !activities) { send(res, 400, { error: 'Missing stravaId or activities' }); return; }
 
-      // Find referee by stravaId
-      let ref = DB.referees.find(r => r.stravaId === stravaId);
+      let ref = null;
 
-      // If not found by stravaId, try to match by token (first connected referee without stravaId)
-      if (!ref) {
-        ref = DB.referees.find(r => r.token && !r.stravaId);
+      // 1. Match by refereeId from invite link (most reliable)
+      if (refereeId) {
+        ref = DB.referees.find(r => r.id === refereeId);
       }
 
-      if (!ref) { send(res, 404, { error: 'Referee not found' }); return; }
+      // 2. Match by Strava ID (returning user)
+      if (!ref) {
+        ref = DB.referees.find(r => r.stravaId === stravaId);
+      }
+
+      // 3. Match by first name (case-insensitive, accent-insensitive)
+      if (!ref && stravaFirstname) {
+        const normalize = s => s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'');
+        const fn = normalize(stravaFirstname);
+        ref = DB.referees.find(r => normalize(r.name.split(' ')[0]) === fn);
+      }
+
+      // 4. Create a new slot automatically if no match found
+      if (!ref) {
+        const fullName = [stravaFirstname, stravaLastname].filter(Boolean).join(' ') || 'Unknown';
+        const id = 'auto_' + stravaId;
+        ref = { id, name: fullName, token: null, refresh: null, expires: null, lastSync: null, activities: [] };
+        DB.referees.push(ref);
+        console.log(`Auto-created referee slot for ${fullName} (Strava ID: ${stravaId})`);
+      }
 
       ref.stravaId   = stravaId;
       ref.activities = activities;
       ref.lastSync   = new Date().toISOString();
+      if (stravaFirstname && ref.id.startsWith('auto_')) {
+        ref.name = [stravaFirstname, stravaLastname].filter(Boolean).join(' ');
+      }
       saveData(DB);
+      console.log(`Saved ${activities.length} activities for ${ref.name}`);
       send(res, 200, { ok: true, name: ref.name, count: activities.length });
     } catch(e) {
       send(res, 500, { error: e.message });
