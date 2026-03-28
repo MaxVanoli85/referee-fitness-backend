@@ -29,16 +29,7 @@ function loadData() {
   } catch(e) {}
   return {
     referees: [
-      { id: 'jeremy',  name: 'Jérémy',  token: null, refresh: null, expires: null, lastSync: null, activities: [] },
-      { id: 'jasmin',  name: 'Jasmin',  token: null, refresh: null, expires: null, lastSync: null, activities: [] },
-      { id: 'loic',    name: 'Loïc',    token: null, refresh: null, expires: null, lastSync: null, activities: [] },
-      { id: 'yann',    name: 'Yann',    token: null, refresh: null, expires: null, lastSync: null, activities: [] },
-      { id: 'kevin',   name: 'Kevin',   token: null, refresh: null, expires: null, lastSync: null, activities: [] },
-      { id: 'dani',    name: 'Dani',    token: null, refresh: null, expires: null, lastSync: null, activities: [] },
-      { id: 'johnny',  name: 'Johnny',  token: null, refresh: null, expires: null, lastSync: null, activities: [] },
-      { id: 'ivo',     name: 'Ivo',     token: null, refresh: null, expires: null, lastSync: null, activities: [] },
-      { id: 'laurent', name: 'Laurent', token: null, refresh: null, expires: null, lastSync: null, activities: [] },
-      { id: 'gilles',  name: 'Gilles',  token: null, refresh: null, expires: null, lastSync: null, activities: [] },
+      { id: 'yann_ludovicy', name: 'Yann Ludovicy', token: null, refresh: null, expires: null, lastSync: null, activities: [] },
     ]
   };
 }
