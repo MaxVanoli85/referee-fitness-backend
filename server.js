@@ -214,7 +214,8 @@ const server = http.createServer(async (req, res) => {
     if (!checkPin(req)) { send(res, 401, { error: 'Unauthorized' }); return; }
     const safe = DB.referees.map(r => ({
       id: r.id, name: r.name, connected: !!r.token,
-      lastSync: r.lastSync, activities: r.activities || []
+      lastSync: r.lastSync, activities: r.activities || [],
+      profile: r.profile || null
     }));
     send(res, 200, { referees: safe });
     return;
@@ -258,7 +259,7 @@ const server = http.createServer(async (req, res) => {
   // ── Referee: push activities ────────────────────────────────────────────
   if (req.method === 'POST' && req.url === '/referee/push') {
     try {
-      const { stravaId, stravaFirstname, stravaLastname, activities, refereeId } = await readBody(req);
+      const { stravaId, stravaFirstname, stravaLastname, activities, refereeId, profile } = await readBody(req);
       if (!stravaId || !activities) { send(res, 400, { error: 'Missing stravaId or activities' }); return; }
 
       let ref = null;
@@ -292,6 +293,7 @@ const server = http.createServer(async (req, res) => {
       ref.stravaId   = stravaId;
       ref.activities = activities;
       ref.lastSync   = new Date().toISOString();
+      if (profile) ref.profile = profile;
       if (stravaFirstname && ref.id.startsWith('auto_')) {
         ref.name = [stravaFirstname, stravaLastname].filter(Boolean).join(' ');
       }
