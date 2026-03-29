@@ -284,7 +284,12 @@ const server = http.createServer(async (req, res) => {
       ref.stravaId   = stravaId;
       ref.activities = activities;
       ref.lastSync   = new Date().toISOString();
-      if (profile) ref.profile = profile;
+      if (profile) {
+        // Merge incoming profile with existing — don't wipe fields not included this push
+        ref.profile = Object.assign({}, ref.profile || {}, 
+          Object.fromEntries(Object.entries(profile).filter(([,v]) => v !== null && v !== undefined))
+        );
+      }
       if (stravaFirstname && ref.id.startsWith('auto_')) {
         ref.name = [stravaFirstname, stravaLastname].filter(Boolean).join(' ');
       }
