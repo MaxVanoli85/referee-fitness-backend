@@ -339,12 +339,14 @@ const server = http.createServer(async (req, res) => {
 
   // ── Coach: save feedback for referee ─────────────────────────────────────
   if (req.method === 'POST' && req.url === '/coach/feedback') {
-    if (!checkPin(req)) { send(res, 401, { error: 'Unauthorized' }); return; }
+    if (!checkPin(req)) { send(res, 401, { error: 'Unauthorized — wrong PIN' }); return; }
     try {
       const { refereeId, monthKey, feedback } = await readBody(req);
-      if (!refereeId || !monthKey) { send(res, 400, { error: 'Missing fields' }); return; }
+      console.log('[feedback] refereeId='+refereeId+' monthKey='+monthKey);
+      if (!refereeId || !monthKey) { send(res, 400, { error: 'Missing refereeId or monthKey' }); return; }
       const ref = DB.referees.find(r => r.id === refereeId);
-      if (!ref) { send(res, 404, { error: 'Referee not found' }); return; }
+      console.log('[feedback] referees in DB:', DB.referees.map(r=>r.id));
+      if (!ref) { send(res, 404, { error: 'Referee not found: ' + refereeId }); return; }
       if (!ref.feedback) ref.feedback = {};
       ref.feedback[monthKey] = { ...feedback, updatedAt: new Date().toISOString() };
       saveData(DB);
