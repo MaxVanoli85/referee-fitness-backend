@@ -6,6 +6,7 @@ const path = require('path');
 const CLIENT_ID     = '216504';
 const CLIENT_SECRET = '49a68dd36016ce760b6d5d3b69173c0f8ae41d5d';
 const COACH_PIN     = '8185';
+const CAF_PIN       = '5577';
 const PORT          = process.env.PORT || 3000;
 const DATA_FILE     = path.join('/tmp', 'referee_data.json');
 
@@ -194,7 +195,8 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && req.url === '/coach/login') {
     try {
       const { pin } = await readBody(req);
-      if (pin === COACH_PIN) { send(res, 200, { ok: true }); }
+      if (pin === COACH_PIN) { send(res, 200, { ok: true, role: 'coach' }); }
+      else if (pin === CAF_PIN) { send(res, 200, { ok: true, role: 'caf' }); }
       else { send(res, 401, { error: 'Wrong PIN' }); }
     } catch(e) { send(res, 500, { error: e.message }); }
     return;
@@ -206,7 +208,10 @@ const server = http.createServer(async (req, res) => {
     const safe = DB.referees.map(r => ({
       id: r.id, name: r.name, connected: !!r.token,
       lastSync: r.lastSync, activities: r.activities || [],
-      profile: r.profile || null
+      profile: r.profile || null,
+      feedback: r.feedback || {},
+      weeklyFeelings: r.weeklyFeelings || {},
+      rpe: r.rpe || {},
     }));
     send(res, 200, { referees: safe });
     return;
@@ -299,6 +304,68 @@ const server = http.createServer(async (req, res) => {
     } catch(e) {
       send(res, 500, { error: e.message });
     }
+    return;
+  }
+
+  // ── Referee: save RPE for activity ──────────────────────────────────────
+  if (req.method === 'POST' && req.url === '/referee/rpe') {
+    try {
+      const { stravaId, activityId, rpe } = await readBody(req);
+      if (!stravaId || !activityId) { send(res, 400, { error: 'Missing fields' }); return; }
+      const ref = DB.referees.find(r => r.stravaId === stravaId);
+      if (!ref) { send(res, 404, { error: 'Referee not found' }); return; }
+      if (!ref.rpe) ref.rpe = {};
+      ref.rpe[String(activityId)] = rpe;
+      saveData(DB);
+      send(res, 200, { ok: true });
+    } catch(e) { send(res, 500, { error: e.message }); }
+    return;
+  }
+
+  // ── Referee: save weekly feeling ─────────────────────────────────────────
+  if (req.method === 'POST' && req.url === '/referee/weekly-feeling') {
+    try {
+      const { stravaId, weekKey, feeling } = await readBody(req);
+      if (!stravaId || !weekKey) { send(res, 400, { error: 'Missing fields' }); return; }
+      const ref = DB.referees.find(r => r.stravaId === stravaId);
+      if (!ref) { send(res, 404, { error: 'Referee not found' }); return; }
+      if (!ref.weeklyFeelings) ref.weeklyFeelings = {};
+      ref.weeklyFeelings[weekKey] = feeling;
+      saveData(DB);
+      send(res, 200, { ok: true });
+    } catch(e) { send(res, 500, { error: e.message }); }
+    return;
+  }
+
+  // ── Coach: save feedback for referee ─────────────────────────────────────
+  if (req.method === 'POST' && req.url === '/coach/feedback') {
+    if (!checkPin(req)) { send(res, 401, { error: 'Unauthorized' }); return; }
+    try {
+      const { refereeId, monthKey, feedback } = await readBody(req);
+      if (!refereeId || !monthKey) { send(res, 400, { error: 'Missing fields' }); return; }
+      const ref = DB.referees.find(r => r.id === refereeId);
+      if (!ref) { send(res, 404, { error: 'Referee not found' }); return; }
+      if (!ref.feedback) ref.feedback = {};
+      ref.feedback[monthKey] = { ...feedback, updatedAt: new Date().toISOString() };
+      saveData(DB);
+      send(res, 200, { ok: true });
+    } catch(e) { send(res, 500, { error: e.message }); }
+    return;
+  }
+
+  // ── CAF: get squad summary ────────────────────────────────────────────────
+  if (req.method === 'GET' && req.url.startsWith('/caf/summary')) {
+    const pin = req.headers['x-coach-pin'];
+    if (pin !== CAF_PIN && pin !== COACH_PIN) { send(res, 401, { error: 'Unauthorized' }); return; }
+    const summary = DB.referees.map(r => ({
+      id: r.id, name: r.name, connected: !!r.token,
+      lastSync: r.lastSync, profile: r.profile || null,
+      activities: r.activities || [],
+      feedback: r.feedback || {},
+      weeklyFeelings: r.weeklyFeelings || {},
+      rpe: r.rpe || {},
+    }));
+    send(res, 200, { referees: summary });
     return;
   }
 
