@@ -371,6 +371,21 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── Referee: get own feedback (public by stravaId) ─────────────────────────
+  if (req.method === 'GET' && req.url.startsWith('/referee/feedback')) {
+    try {
+      const url    = new URL('http://x' + req.url);
+      const stravaId = parseInt(url.searchParams.get('stravaId'));
+      const monthKey = url.searchParams.get('monthKey');
+      if (!stravaId || !monthKey) { send(res, 400, { error: 'Missing params' }); return; }
+      const ref = DB.referees.find(r => r.stravaId === stravaId);
+      if (!ref) { send(res, 404, { error: 'Not found' }); return; }
+      const fb = (ref.feedback || {})[monthKey] || null;
+      send(res, 200, { feedback: fb });
+    } catch(e) { send(res, 500, { error: e.message }); }
+    return;
+  }
+
   send(res, 404, { error: 'Not found' });
 });
 
