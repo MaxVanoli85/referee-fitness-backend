@@ -30,7 +30,11 @@ function loadData() {
   } catch(e) {}
   return {
     referees: [
-      { id: 'yann_ludovicy', name: 'Yann Ludovicy', token: null, refresh: null, expires: null, lastSync: null, activities: [] },
+      { id: 'yann_ludovicy',  name: 'Yann Ludovicy',  token: null, refresh: null, expires: null, lastSync: null, activities: [] },
+      { id: 'loic_thomas',    name: 'Loïc Thomas',    token: null, refresh: null, expires: null, lastSync: null, activities: [] },
+      { id: 'jeremy_muller',  name: 'Jérémy Muller',  token: null, refresh: null, expires: null, lastSync: null, activities: [] },
+      { id: 'jasmin_sabotic', name: 'Jasmin Sabotic',  token: null, refresh: null, expires: null, lastSync: null, activities: [] },
+      { id: 'laurent_wilmes', name: 'Laurent Wilmes',  token: null, refresh: null, expires: null, lastSync: null, activities: [] },
     ]
   };
 }
@@ -210,7 +214,7 @@ const server = http.createServer(async (req, res) => {
       lastSync: r.lastSync, activities: r.activities || [],
       profile: r.profile || null,
       feedback: r.feedback || {},
-      weeklyFeelings: r.weeklyFeelings || {},
+      monthlyFeelings: r.monthlyFeelings || {},
       rpe: r.rpe || {},
     }));
     send(res, 200, { referees: safe });
@@ -327,10 +331,16 @@ const server = http.createServer(async (req, res) => {
     try {
       const { stravaId, weekKey, feeling } = await readBody(req);
       if (!stravaId || !weekKey) { send(res, 400, { error: 'Missing fields' }); return; }
-      const ref = DB.referees.find(r => r.stravaId === stravaId);
-      if (!ref) { send(res, 404, { error: 'Referee not found' }); return; }
-      if (!ref.weeklyFeelings) ref.weeklyFeelings = {};
-      ref.weeklyFeelings[weekKey] = feeling;
+      let ref = DB.referees.find(r => r.stravaId === stravaId);
+      if (!ref) {
+        // Auto-create slot if not found
+        const id = 'auto_' + stravaId;
+        ref = { id, name: 'Athlete', token: null, refresh: null, expires: null, lastSync: null, activities: [], stravaId };
+        DB.referees.push(ref);
+        console.log('[feeling] auto-created slot for stravaId', stravaId);
+      }
+      if (!ref.monthlyFeelings) ref.monthlyFeelings = {};
+      ref.monthlyFeelings[weekKey] = feeling;
       saveData(DB);
       send(res, 200, { ok: true });
     } catch(e) { send(res, 500, { error: e.message }); }
@@ -364,7 +374,7 @@ const server = http.createServer(async (req, res) => {
       lastSync: r.lastSync, profile: r.profile || null,
       activities: r.activities || [],
       feedback: r.feedback || {},
-      weeklyFeelings: r.weeklyFeelings || {},
+      monthlyFeelings: r.monthlyFeelings || {},
       rpe: r.rpe || {},
     }));
     send(res, 200, { referees: summary });
