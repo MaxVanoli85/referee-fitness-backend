@@ -342,9 +342,11 @@ const server = http.createServer(async (req, res) => {
   // ── /referee/rpe ─────────────────────────────────────────────────
   if (req.method === 'POST' && req.url === '/referee/rpe') {
     try {
-      const { stravaId, activityId, rpe } = await readBody(req);
-      if (!stravaId || !activityId) { send(res, 400, { error: 'Missing fields' }); return; }
-      let ref = await dbGetByStravaId(stravaId);
+      const { stravaId, activityId, rpe, refereeId } = await readBody(req);
+      if (!activityId) { send(res, 400, { error: 'Missing activityId' }); return; }
+      let ref = null;
+      if (refereeId) ref = await dbGetById(refereeId);
+      if (!ref && stravaId) ref = await dbGetByStravaId(stravaId);
       if (!ref) { send(res, 404, { error: 'Referee not found' }); return; }
       const existing = ref.rpe || {};
       existing[String(activityId)] = rpe;
