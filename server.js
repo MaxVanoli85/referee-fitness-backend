@@ -243,12 +243,23 @@ const server = http.createServer(async (req, res) => {
     if (!checkPin(req)) { send(res, 401, { error: 'Unauthorized' }); return; }
     try {
       const rows = await dbGetAll();
-      const safe = rows.map(r => ({
-        id: r.id, name: r.name, connected: !!r.token,
-        lastSync: r.last_sync, activities: r.activities || [],
-        profile: r.profile || null, feedback: r.feedback || {},
-        monthlyFeelings: r.monthly_feelings || {}, rpe: r.rpe || {}
-      }));
+      const safe = rows.map(r => {
+        // Apply stored _cat overrides from rpe field into activities
+        const rpe = r.rpe || {};
+        const acts = (r.activities || []).map(a => {
+          const rpeVal = rpe[String(a.id)];
+          if (rpeVal && typeof rpeVal === 'string' && rpeVal.startsWith('_cat:')) {
+            return { ...a, _cat: rpeVal.replace('_cat:', '') };
+          }
+          return a;
+        });
+        return {
+          id: r.id, name: r.name, connected: !!r.token, strava_id: r.strava_id,
+          lastSync: r.last_sync, activities: acts,
+          profile: r.profile || null, feedback: r.feedback || {},
+          monthlyFeelings: r.monthly_feelings || {}, rpe
+        };
+      });
       send(res, 200, { referees: safe });
     } catch(e) { send(res, 500, { error: e.message }); }
     return;
@@ -395,13 +406,40 @@ const server = http.createServer(async (req, res) => {
     if (pin !== CAF_PIN && pin !== COACH_PIN) { send(res, 401, { error: 'Unauthorized' }); return; }
     try {
       const rows = await dbGetAll();
-      const summary = rows.map(r => ({
-        id: r.id, name: r.name, connected: !!r.token,
-        lastSync: r.last_sync, profile: r.profile || null,
-        activities: r.activities || [], feedback: r.feedback || {},
-        monthlyFeelings: r.monthly_feelings || {}, rpe: r.rpe || {}
-      }));
+      const summary = rows.map(r => {
+        const rpe = r.rpe || {};
+        const acts = (r.activities || []).map(a => {
+          const rpeVal = rpe[String(a.id)];
+          if (rpeVal && typeof rpeVal === 'string' && rpeVal.startsWith('_cat:')) {
+            return { ...a, _cat: rpeVal.replace('_cat:', '') };
+          }
+          return a;
+        });
+        return {
+          id: r.id, name: r.name, connected: !!r.token, strava_id: r.strava_id,
+          lastSync: r.last_sync, profile: r.profile || null,
+          activities: acts, feedback: r.feedback || {},
+          monthlyFeelings: r.monthly_feelings || {}, rpe
+        };
+      });
       send(res, 200, { referees: summary });
+    } catch(e) { send(res, 500, { error: e.message }); }
+    return;
+  }
+
+  // ── /referee/profile (lightweight profile save) ─────────────────────────
+  if (req.method === 'POST' && req.url === '/referee/profile') {
+    try {
+      const { stravaId, profile } = await readBody(req);
+      if (!stravaId || !profile) { send(res, 400, { error: 'Missing fields' }); return; }
+      let ref = await dbGetByStravaId(stravaId);
+      if (!ref) { send(res, 404, { error: 'Referee not found — connect Strava first' }); return; }
+      const merged = Object.assign({}, ref.profile || {},
+        Object.fromEntries(Object.entries(profile).filter(([,v]) => v !== null && v !== undefined))
+      );
+      await dbUpsert(ref.id, { profile: merged });
+      console.log(`Profile saved for ${ref.name}`);
+      send(res, 200, { ok: true, name: ref.name });
     } catch(e) { send(res, 500, { error: e.message }); }
     return;
   }
