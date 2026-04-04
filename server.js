@@ -433,7 +433,13 @@ const server = http.createServer(async (req, res) => {
       const { stravaId, profile } = await readBody(req);
       if (!stravaId || !profile) { send(res, 400, { error: 'Missing fields' }); return; }
       let ref = await dbGetByStravaId(stravaId);
-      if (!ref) { send(res, 404, { error: 'Referee not found — connect Strava first' }); return; }
+      if (!ref && profile && profile.picture) {
+        // Try auto-create if not found yet
+        const id = 'auto_' + stravaId;
+        await dbInsert({ id, name: 'Athlete', strava_id: stravaId, activities: [], profile: {}, feedback: {}, monthly_feelings: {}, rpe: {} });
+        ref = await dbGetByStravaId(stravaId);
+      }
+      if (!ref) { send(res, 404, { error: 'Referee not found — sync activities first' }); return; }
       const merged = Object.assign({}, ref.profile || {},
         Object.fromEntries(Object.entries(profile).filter(([,v]) => v !== null && v !== undefined))
       );
