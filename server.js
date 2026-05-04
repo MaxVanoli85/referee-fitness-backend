@@ -450,6 +450,19 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── /referee/get-profile ────────────────────────────────────────────────
+  if (req.method === 'GET' && req.url.startsWith('/referee/get-profile')) {
+    try {
+      const url = new URL('http://x' + req.url);
+      const stravaId = parseInt(url.searchParams.get('stravaId'));
+      if (!stravaId) { send(res, 400, { error: 'Missing stravaId' }); return; }
+      const ref = await dbGetByStravaId(stravaId);
+      if (!ref) { send(res, 200, { profile: null }); return; }
+      send(res, 200, { profile: ref.profile || null });
+    } catch(e) { send(res, 500, { error: e.message }); }
+    return;
+  }
+
   send(res, 404, { error: 'Not found' });
 });
 
