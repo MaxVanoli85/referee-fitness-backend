@@ -589,6 +589,29 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── /referee/activities — returns full activities with hr_zones ────────────
+  if (req.method === 'GET' && req.url.startsWith('/referee/activities')) {
+    try {
+      const url = new URL('http://x' + req.url);
+      const stravaId = parseInt(url.searchParams.get('stravaId'));
+      if (!stravaId) { send(res, 400, { error: 'Missing stravaId' }); return; }
+      const ref = await dbGetByStravaId(stravaId);
+      if (!ref) { send(res, 404, { error: 'Not found' }); return; }
+      // Apply _cat overrides from rpe field
+      const rpe = ref.rpe || {};
+      const acts = (ref.activities || []).map(a => {
+        const rpeVal = rpe[String(a.id)];
+        if (rpeVal && typeof rpeVal === 'string' && rpeVal.startsWith('_cat:')) {
+          return { ...a, _cat: rpeVal.replace('_cat:', '') };
+        }
+        return a;
+      });
+      const exactCount = acts.filter(a => a.hr_zones && a.hr_zones.length === 5).length;
+      send(res, 200, { activities: acts, exactZones: exactCount });
+    } catch(e) { send(res, 500, { error: e.message }); }
+    return;
+  }
+
   send(res, 404, { error: 'Not found' });
 });
 
