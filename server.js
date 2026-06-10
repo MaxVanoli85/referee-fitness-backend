@@ -298,10 +298,33 @@ const server = http.createServer(async (req, res) => {
       const r = await stravaPost({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET, code, grant_type: 'authorization_code' });
       if (r.status !== 200) { send(res, 502, { error: 'Strava exchange failed', detail: r.body }); return; }
       const { access_token, refresh_token, expires_at, athlete } = r.body;
+      console.log('[exchange] refereeId:', refereeId, 'athlete:', athlete?.id, athlete?.firstname);
       if (refereeId) {
         let ref = await dbGetById(refereeId);
+        console.log('[exchange] found ref by id:', ref?.id, ref?.name);
         if (ref) {
           await dbUpsert(ref.id, { token: access_token, refresh: refresh_token, expires: expires_at, strava_id: athlete?.id });
+          console.log('[exchange] token saved for', ref.name);
+        } else {
+          console.log('[exchange] no ref found for id:', refereeId, '— trying by stravaId');
+          // Try to find by stravaId as fallback
+          let refByStrava = await dbGetByStravaId(athlete?.id);
+          if (refByStrava) {
+            await dbUpsert(refByStrava.id, { token: access_token, refresh: refresh_token, expires: expires_at, strava_id: athlete?.id });
+            console.log('[exchange] token saved via stravaId for', refByStrava.name);
+          } else {
+            console.log('[exchange] no ref found at all — creating auto slot');
+            const id = 'auto_' + athlete?.id;
+            await dbInsert({ id, name: [athlete?.firstname, athlete?.lastname].filter(Boolean).join(' '), strava_id: athlete?.id, token: access_token, refresh: refresh_token, expires: expires_at, activities: [], profile: {}, feedback: {}, monthly_feelings: {}, rpe: {} });
+          }
+        }
+      } else {
+        console.log('[exchange] no refereeId — trying to match by stravaId', athlete?.id);
+        let ref = await dbGetByStravaId(athlete?.id);
+        if (!ref && athlete?.firstname) ref = await dbGetByFirstName(athlete.firstname);
+        if (ref) {
+          await dbUpsert(ref.id, { token: access_token, refresh: refresh_token, expires: expires_at, strava_id: athlete?.id });
+          console.log('[exchange] token saved via fallback for', ref.name);
         }
       }
       send(res, 200, { access_token, refresh_token, expires_at, athlete });
