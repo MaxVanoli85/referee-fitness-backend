@@ -432,9 +432,16 @@ const server = http.createServer(async (req, res) => {
       const mergedProfile = Object.assign({}, ref.profile || {},
         Object.fromEntries(Object.entries(profile || {}).filter(([,v]) => v !== null && v !== undefined))
       );
+      // Preserve existing hr_zones — don't overwrite with empty frontend data
+      const existingActs = (ref.activities || []).reduce((m,a) => { m[String(a.id)]=a; return m; }, {});
+      const mergedActs = activities.map(a => {
+        const prev = existingActs[String(a.id)];
+        return (prev && prev.hr_zones) ? { ...a, hr_zones: prev.hr_zones } : a;
+      });
+
       await dbUpsert(ref.id, {
         strava_id: stravaId,
-        activities,
+        activities: mergedActs,
         last_sync: new Date().toISOString(),
         profile: mergedProfile,
         ...(stravaFirstname && ref.id.startsWith('auto_') ? { name: [stravaFirstname, stravaLastname].filter(Boolean).join(' ') } : {})
@@ -445,9 +452,11 @@ const server = http.createServer(async (req, res) => {
       (async () => {
         try {
           const freshRef = await dbGetById(ref.id);
-          if (!freshRef || !freshRef.token) return;
+          console.log(`[stream] starting for ${ref.name}, has token: ${!!freshRef?.token}`);
+          if (!freshRef || !freshRef.token) { console.log('[stream] no token stored, skipping'); return; }
           const token = await ensureFreshToken(freshRef);
-          if (!token) return;
+          console.log(`[stream] token refreshed: ${!!token}`);
+          if (!token) { console.log('[stream] could not refresh token'); return; }
           const now = Math.floor(Date.now() / 1000);
           const cutoff90 = now - 60 * 60 * 24 * 90;
           const profile = freshRef.profile || {};
@@ -456,6 +465,7 @@ const server = http.createServer(async (req, res) => {
           const toStream = (freshRef.activities || []).filter(a =>
             a.average_heartrate && new Date(a.start_date).getTime() / 1000 > cutoff90
           );
+          console.log(`[stream] will fetch ${toStream.length} streams for ${freshRef.name}`);
           let updated = false;
           for (const act of toStream) {
             if (act.hr_zones) continue; // already have it
