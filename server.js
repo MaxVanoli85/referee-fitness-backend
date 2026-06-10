@@ -155,11 +155,66 @@ async function ensureFreshToken(ref) {
   } catch(e) { return null; }
 }
 
+// ── Fetch HR stream and compute exact zone minutes ──────────────────────────
+// Polar zone boundaries: Z1<60%, Z2 60-76%, Z3 76-86%, Z4 86-94%, Z5>94%
+const ZONE_BOUNDS = [0.60, 0.76, 0.86, 0.94];
+
+function hrToZoneIndex(hr, maxHR) {
+  const pct = hr / maxHR;
+  if (pct < ZONE_BOUNDS[0]) return 0;
+  if (pct < ZONE_BOUNDS[1]) return 1;
+  if (pct < ZONE_BOUNDS[2]) return 2;
+  if (pct < ZONE_BOUNDS[3]) return 3;
+  return 4;
+}
+
+function calcZonesFromStream(hrData, timeData, maxHR) {
+  // hrData: array of HR values (bpm), timeData: array of elapsed seconds
+  // Returns array of 5 values: seconds spent in each zone
+  const zones = [0, 0, 0, 0, 0];
+  if (!hrData || !timeData || hrData.length < 2) return null;
+  for (let i = 1; i < hrData.length; i++) {
+    const dt = timeData[i] - timeData[i - 1]; // seconds since last point
+    if (dt <= 0 || dt > 60) continue; // skip gaps > 1 min (pauses)
+    const hr = hrData[i];
+    if (!hr || hr < 30 || hr > 250) continue; // skip invalid readings
+    zones[hrToZoneIndex(hr, maxHR)] += dt;
+  }
+  return zones; // seconds per zone
+}
+
+async function fetchHRStream(activityId, token) {
+  return new Promise((resolve) => {
+    const opts = {
+      hostname: 'www.strava.com',
+      path: `/api/v3/activities/${activityId}/streams?keys=heartrate,time&key_by_type=true`,
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` }
+    };
+    const req = https.request(opts, res => {
+      let d = '';
+      res.on('data', c => d += c);
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(d);
+          if (parsed.heartrate && parsed.time) {
+            resolve({ hr: parsed.heartrate.data, time: parsed.time.data });
+          } else {
+            resolve(null);
+          }
+        } catch(e) { resolve(null); }
+      });
+    });
+    req.on('error', () => resolve(null));
+    req.end();
+  });
+}
+
 async function syncRefereeActivities(ref) {
   const token = await ensureFreshToken(ref);
   if (!token) return;
   const now   = Math.floor(Date.now() / 1000);
-  const after = now - 60 * 60 * 24 * 548;
+  const after = now - 60 * 60 * 24 * 548; // 18 months
   let all = [], page = 1;
   while (true) {
     const r = await new Promise((resolve, reject) => {
@@ -183,7 +238,47 @@ async function syncRefereeActivities(ref) {
     if (r.length < 100) break;
     page++;
   }
+
+  // Fetch HR streams for activities in last 90 days that have HR data
+  const cutoff90 = now - 60 * 60 * 24 * 90;
+  const profile  = ref.profile || {};
+  // Max HR: use stored profile value, or estimate from age, or fallback
+  const maxHR    = profile.maxhr || (profile.age ? 220 - profile.age : 185);
+  const existing = (ref.activities || []).reduce((m, a) => { m[String(a.id)] = a; return m; }, {});
+
+  const toStream = all.filter(a =>
+    a.average_heartrate &&                            // has HR data
+    new Date(a.start_date).getTime() / 1000 > cutoff90 // last 90 days
+  );
+
+  console.log(`[stream] ${ref.name}: fetching streams for ${toStream.length} activities`);
+
+  // Rate-limit: Strava allows 100 req/15min. Fetch with small delay.
+  for (const act of toStream) {
+    const prev = existing[String(act.id)];
+    // Skip if we already have stream data for this activity
+    if (prev && prev.hr_zones) {
+      act.hr_zones = prev.hr_zones;
+      continue;
+    }
+    await new Promise(r => setTimeout(r, 300)); // 300ms between calls
+    const stream = await fetchHRStream(act.id, token);
+    if (stream) {
+      const zones = calcZonesFromStream(stream.hr, stream.time, maxHR);
+      if (zones) act.hr_zones = zones; // [s_z1, s_z2, s_z3, s_z4, s_z5]
+    }
+  }
+
+  // Preserve hr_zones for older activities already in DB
+  all.forEach(a => {
+    if (!a.hr_zones) {
+      const prev = existing[String(a.id)];
+      if (prev && prev.hr_zones) a.hr_zones = prev.hr_zones;
+    }
+  });
+
   await dbUpsert(ref.id, { activities: all, last_sync: new Date().toISOString() });
+  console.log(`[stream] ${ref.name}: sync complete, ${toStream.length} streams processed`);
 }
 
 // ── Router ──────────────────────────────────────────────────────────
@@ -344,8 +439,39 @@ const server = http.createServer(async (req, res) => {
         profile: mergedProfile,
         ...(stravaFirstname && ref.id.startsWith('auto_') ? { name: [stravaFirstname, stravaLastname].filter(Boolean).join(' ') } : {})
       });
-      console.log(`Saved ${activities.length} activities for ${ref.name}`);
+      // Fetch HR streams for recent activities with HR data (async, don't block response)
       send(res, 200, { ok: true, name: ref.name, count: activities.length });
+      // Background stream fetch after responding
+      (async () => {
+        try {
+          const freshRef = await dbGetById(ref.id);
+          if (!freshRef || !freshRef.token) return;
+          const token = await ensureFreshToken(freshRef);
+          if (!token) return;
+          const now = Math.floor(Date.now() / 1000);
+          const cutoff90 = now - 60 * 60 * 24 * 90;
+          const profile = freshRef.profile || {};
+          const maxHR = profile.maxhr || (profile.age ? 220 - profile.age : 185);
+          const existing = (freshRef.activities || []).reduce((m, a) => { m[String(a.id)] = a; return m; }, {});
+          const toStream = (freshRef.activities || []).filter(a =>
+            a.average_heartrate && new Date(a.start_date).getTime() / 1000 > cutoff90
+          );
+          let updated = false;
+          for (const act of toStream) {
+            if (act.hr_zones) continue; // already have it
+            await new Promise(r => setTimeout(r, 300));
+            const stream = await fetchHRStream(act.id, token);
+            if (stream) {
+              const zones = calcZonesFromStream(stream.hr, stream.time, maxHR);
+              if (zones) { act.hr_zones = zones; updated = true; }
+            }
+          }
+          if (updated) {
+            await dbUpsert(freshRef.id, { activities: freshRef.activities });
+            console.log(`[stream] background fetch complete for ${freshRef.name}`);
+          }
+        } catch(e) { console.log('[stream] background fetch error:', e.message); }
+      })();
     } catch(e) { send(res, 500, { error: e.message }); }
     return;
   }
