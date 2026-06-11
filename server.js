@@ -25,6 +25,51 @@ setInterval(() => {
   https.get(SELF_URL, () => {}).on('error', () => {});
 }, 10 * 60 * 1000);
 
+// ── Scheduled daily sync ────────────────────────────────────────────────────
+// Runs every day at 02:00 Luxembourg time (UTC+1/+2)
+function scheduleDailySync() {
+  const now = new Date();
+  // Target: 02:00 CET (UTC+1) = 01:00 UTC, or CEST (UTC+2) = 00:00 UTC
+  // Use 01:00 UTC as a safe middle ground year-round
+  const next = new Date();
+  next.setUTCHours(1, 0, 0, 0);
+  if (next <= now) next.setUTCDate(next.getUTCDate() + 1); // push to tomorrow
+  const msUntil = next - now;
+  console.log(`[cron] next daily sync in ${Math.round(msUntil/60000)} minutes (${next.toISOString()})`);
+  setTimeout(async () => {
+    await runDailySync();
+    scheduleDailySync(); // reschedule for next day
+  }, msUntil);
+}
+
+async function runDailySync() {
+  console.log('[cron] starting daily sync —', new Date().toISOString());
+  try {
+    const refs = await dbGetAll();
+    const connected = refs.filter(r => r.token);
+    console.log(`[cron] syncing ${connected.length} connected referees`);
+    let success = 0, failed = 0;
+    for (const ref of connected) {
+      try {
+        await syncRefereeActivities(ref);
+        success++;
+        console.log(`[cron] ✓ ${ref.name}`);
+      } catch(e) {
+        failed++;
+        console.log(`[cron] ✗ ${ref.name}: ${e.message}`);
+      }
+      // Small delay between referees to respect Strava rate limits
+      await new Promise(r => setTimeout(r, 2000));
+    }
+    console.log(`[cron] daily sync complete — ${success} ok, ${failed} failed`);
+  } catch(e) {
+    console.log('[cron] daily sync error:', e.message);
+  }
+}
+
+// Start the scheduler
+scheduleDailySync();
+
 // ── Supabase REST helpers ───────────────────────────────────────────
 function sbRequest(method, path, body) {
   return new Promise((resolve, reject) => {
