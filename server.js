@@ -335,6 +335,13 @@ async function fetchHRStream(activityId, token) {
 async function syncRefereeActivities(ref) {
   const token = await ensureFreshToken(ref);
   if (!token) return;
+
+  // Re-read from DB to get freshest activities (with hr_zones if already saved)
+  const freshRef = await dbGetById(ref.id);
+  const existingActs = ((freshRef || ref).activities || []);
+  const existing = existingActs.reduce((m, a) => { m[String(a.id)] = a; return m; }, {});
+  const cachedZones = existingActs.filter(a => a.hr_zones).length;
+
   const now   = Math.floor(Date.now() / 1000);
   const after = now - 60 * 60 * 24 * 548; // 18 months
   let all = [], page = 1;
@@ -361,46 +368,36 @@ async function syncRefereeActivities(ref) {
     page++;
   }
 
-  // Fetch HR streams for activities in last 90 days that have HR data
-  const cutoff90 = now - 60 * 60 * 24 * 90;
-  const profile  = ref.profile || {};
-  // Max HR: use stored profile value, or estimate from age, or fallback
-  const maxHR    = profile.maxhr || (profile.age ? 220 - profile.age : 185);
-  const existing = (ref.activities || []).reduce((m, a) => { m[String(a.id)] = a; return m; }, {});
+  // Copy cached hr_zones into all activities first
+  all.forEach(a => {
+    const prev = existing[String(a.id)];
+    if (prev && prev.hr_zones) a.hr_zones = prev.hr_zones;
+  });
 
+  // Only fetch streams for activities without hr_zones
+  const cutoff90 = now - 60 * 60 * 24 * 90;
+  const profile  = (freshRef || ref).profile || {};
+  const maxHR    = profile.maxhr || (profile.age ? 220 - profile.age : 185);
   const toStream = all.filter(a =>
-    a.average_heartrate &&                            // has HR data
-    new Date(a.start_date).getTime() / 1000 > cutoff90 // last 90 days
+    a.average_heartrate &&
+    !a.hr_zones &&
+    new Date(a.start_date).getTime() / 1000 > cutoff90
   );
 
-  console.log(`[stream] ${ref.name}: fetching ${toStream.length} new streams (${all.filter(a=>a.hr_zones).length} already cached)`);
+  console.log(`[stream] ${ref.name}: ${toStream.length} new streams to fetch (${cachedZones} already cached)`);
 
-  // Rate-limit: Strava allows 100 req/15min. Fetch with small delay.
   for (const act of toStream) {
-    const prev = existing[String(act.id)];
-    // Skip if we already have stream data for this activity
-    if (prev && prev.hr_zones) {
-      act.hr_zones = prev.hr_zones;
-      continue;
-    }
-    await new Promise(r => setTimeout(r, 300)); // 300ms between calls
+    await new Promise(r => setTimeout(r, 300));
     const stream = await fetchHRStream(act.id, token);
     if (stream) {
       const zones = calcZonesFromStream(stream.hr, stream.time, maxHR);
-      if (zones) act.hr_zones = zones; // [s_z1, s_z2, s_z3, s_z4, s_z5]
+      if (zones) act.hr_zones = zones;
     }
   }
 
-  // Preserve hr_zones for older activities already in DB
-  all.forEach(a => {
-    if (!a.hr_zones) {
-      const prev = existing[String(a.id)];
-      if (prev && prev.hr_zones) a.hr_zones = prev.hr_zones;
-    }
-  });
-
   await dbUpsert(ref.id, { activities: all, last_sync: new Date().toISOString() });
-  console.log(`[stream] ${ref.name}: sync complete, ${toStream.length} streams processed`);
+  const totalZones = all.filter(a => a.hr_zones).length;
+  console.log(`[stream] ✓ ${ref.name}: ${totalZones} activities with exact HR zones`);
 }
 
 // ── Router ──────────────────────────────────────────────────────────
