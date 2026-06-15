@@ -288,10 +288,7 @@ async function fetchStreamsInBackground(ref) {
         console.log('[stream] Supabase save error:', JSON.stringify(saveResult.body)?.slice(0,200));
       } else {
         console.log(`[stream] complete for ${refToUse.name} — ${zoneCount} activities saved with hr_zones`);
-        // Verify the save worked by reading back
-        const verify = await dbGetById(refToUse.id);
-        const verifyCount = (verify?.activities || []).filter(a => a.hr_zones).length;
-        console.log(`[stream] verification: ${verifyCount} activities have hr_zones in Supabase`);
+
       }
     }
   } catch(e) {
@@ -316,10 +313,8 @@ async function fetchHRStream(activityId, token) {
         try {
           const parsed = JSON.parse(d);
           if (parsed.heartrate && parsed.time) {
-            console.log(`[stream] activity ${activityId}: ${parsed.heartrate.data.length} HR points`);
             resolve({ hr: parsed.heartrate.data, time: parsed.time.data });
           } else {
-            console.log(`[stream] activity ${activityId}: no HR data (keys: ${Object.keys(parsed).join(',')})`);
             if (parsed.errors) console.log('[stream] Strava error:', JSON.stringify(parsed.errors));
             resolve(null);
           }
@@ -425,7 +420,6 @@ const server = http.createServer(async (req, res) => {
       const r = await stravaPost({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET, code, grant_type: 'authorization_code' });
       if (r.status !== 200) { send(res, 502, { error: 'Strava exchange failed', detail: r.body }); return; }
       const { access_token, refresh_token, expires_at, athlete } = r.body;
-      console.log('[exchange] refereeId:', refereeId, 'athlete:', athlete?.id, athlete?.firstname);
       if (refereeId) {
         let ref = await dbGetById(refereeId);
         console.log('[exchange] found ref by id:', ref?.id, ref?.name);
@@ -438,7 +432,7 @@ const server = http.createServer(async (req, res) => {
           let refByStrava = await dbGetByStravaId(athlete?.id);
           if (refByStrava) {
             await dbUpsert(refByStrava.id, { token: access_token, refresh: refresh_token, expires: expires_at, strava_id: athlete?.id });
-            console.log('[exchange] token saved via stravaId for', refByStrava.name);
+            console.log('[exchange] ✓ token saved via stravaId for', refByStrava.name);
           } else {
             console.log('[exchange] no ref found at all — creating auto slot');
             const id = 'auto_' + athlete?.id;
@@ -446,7 +440,6 @@ const server = http.createServer(async (req, res) => {
           }
         }
       } else {
-        console.log('[exchange] no refereeId — trying to match by stravaId', athlete?.id);
         const normalize = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
 
         // 1. Try by stravaId
@@ -455,7 +448,6 @@ const server = http.createServer(async (req, res) => {
         // 2. Try by firstname (accent-insensitive)
         if (!ref && athlete?.firstname) {
           ref = await dbGetByFirstName(athlete.firstname);
-          if (ref) console.log('[exchange] matched by firstname:', ref.name);
         }
 
         // 3. Try by full name match across all refs
@@ -471,7 +463,6 @@ const server = http.createServer(async (req, res) => {
               || parts[0] === stravaFirst
               || (stravaLast && parts[parts.length-1] === stravaLast && parts[0] === stravaFirst);
           }) || null;
-          if (ref) console.log('[exchange] matched by full name:', ref.name);
         }
 
         if (ref) {
@@ -497,7 +488,7 @@ const server = http.createServer(async (req, res) => {
             console.log('[exchange] auto slot merged and deleted');
           } else {
             await dbUpsert(ref.id, { token: access_token, refresh: refresh_token, expires: expires_at, strava_id: athlete?.id });
-            console.log('[exchange] token saved for', ref.name);
+            console.log('[exchange] ✓ token saved for', ref.name);
           }
         } else {
           // No match found — create auto slot with token so sync works
@@ -664,7 +655,6 @@ const server = http.createServer(async (req, res) => {
           console.log(`[stream] starting for ${ref.name}, has token: ${!!freshRef?.token}`);
           if (!freshRef || !freshRef.token) { console.log('[stream] no token stored, skipping'); return; }
           const token = await ensureFreshToken(freshRef);
-          console.log(`[stream] token refreshed: ${!!token}`);
           if (!token) { console.log('[stream] could not refresh token'); return; }
           const now = Math.floor(Date.now() / 1000);
           const cutoff90 = now - 60 * 60 * 24 * 90;
@@ -827,7 +817,6 @@ const server = http.createServer(async (req, res) => {
         return a;
       });
       const exactCount = acts.filter(a => a.hr_zones && a.hr_zones.length === 5).length;
-      console.log(`[activities] ${ref.name}: ${exactCount} exact zones out of ${acts.length}`);
       send(res, 200, { activities: acts, exactZones: exactCount });
     } catch(e) { send(res, 500, { error: e.message }); }
     return;
