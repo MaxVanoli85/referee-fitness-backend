@@ -243,14 +243,23 @@ async function fetchHRStream(activityId, token) {
         try {
           const parsed = JSON.parse(d);
           if (parsed.heartrate && parsed.time) {
+            console.log(`[stream] activity ${activityId}: ${parsed.heartrate.data.length} HR points`);
             resolve({ hr: parsed.heartrate.data, time: parsed.time.data });
           } else {
+            console.log(`[stream] activity ${activityId}: no HR data (keys: ${Object.keys(parsed).join(',')})`);
+            if (parsed.errors) console.log('[stream] Strava error:', JSON.stringify(parsed.errors));
             resolve(null);
           }
-        } catch(e) { resolve(null); }
+        } catch(e) {
+          console.log(`[stream] activity ${activityId}: parse error`, e.message);
+          resolve(null);
+        }
       });
     });
-    req.on('error', () => resolve(null));
+    req.on('error', (e) => {
+      console.log(`[stream] activity ${activityId}: request error`, e.message);
+      resolve(null);
+    });
     req.end();
   });
 }
