@@ -277,9 +277,22 @@ async function fetchStreamsInBackground(ref) {
     }
 
     if (updated) {
-      await dbUpsert(refToUse.id, { activities });
       const zoneCount = activities.filter(a => a.hr_zones).length;
-      console.log(`[stream] complete for ${refToUse.name} — ${zoneCount} activities have hr_zones`);
+      console.log(`[stream] saving ${zoneCount} activities with hr_zones to Supabase...`);
+      const saveResult = await sbRequest('PATCH',
+        `/referees?id=eq.${encodeURIComponent(refToUse.id)}`,
+        { activities }
+      );
+      console.log(`[stream] Supabase save status: ${saveResult.status}`);
+      if (saveResult.status !== 200 && saveResult.status !== 204) {
+        console.log('[stream] Supabase save error:', JSON.stringify(saveResult.body)?.slice(0,200));
+      } else {
+        console.log(`[stream] complete for ${refToUse.name} — ${zoneCount} activities saved with hr_zones`);
+        // Verify the save worked by reading back
+        const verify = await dbGetById(refToUse.id);
+        const verifyCount = (verify?.activities || []).filter(a => a.hr_zones).length;
+        console.log(`[stream] verification: ${verifyCount} activities have hr_zones in Supabase`);
+      }
     }
   } catch(e) {
     console.log('[stream] error:', e.message);
