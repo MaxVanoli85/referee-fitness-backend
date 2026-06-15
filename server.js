@@ -365,11 +365,70 @@ const server = http.createServer(async (req, res) => {
         }
       } else {
         console.log('[exchange] no refereeId — trying to match by stravaId', athlete?.id);
+        const normalize = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
+
+        // 1. Try by stravaId
         let ref = await dbGetByStravaId(athlete?.id);
-        if (!ref && athlete?.firstname) ref = await dbGetByFirstName(athlete.firstname);
+
+        // 2. Try by firstname (accent-insensitive)
+        if (!ref && athlete?.firstname) {
+          ref = await dbGetByFirstName(athlete.firstname);
+          if (ref) console.log('[exchange] matched by firstname:', ref.name);
+        }
+
+        // 3. Try by full name match across all refs
+        if (!ref && athlete?.firstname) {
+          const all = await dbGetAll();
+          const stravaFull = normalize((athlete.firstname||'') + ' ' + (athlete.lastname||''));
+          const stravaFirst = normalize(athlete.firstname||'');
+          const stravaLast  = normalize(athlete.lastname||'');
+          ref = all.find(r => {
+            const parts = r.name.split(' ').map(normalize);
+            const dbFull = normalize(r.name);
+            return dbFull === stravaFull
+              || parts[0] === stravaFirst
+              || (stravaLast && parts[parts.length-1] === stravaLast && parts[0] === stravaFirst);
+          }) || null;
+          if (ref) console.log('[exchange] matched by full name:', ref.name);
+        }
+
         if (ref) {
-          await dbUpsert(ref.id, { token: access_token, refresh: refresh_token, expires: expires_at, strava_id: athlete?.id });
-          console.log('[exchange] token saved via fallback for', ref.name);
+          // Check for existing auto slot — migrate its data to the named slot
+          const autoId = 'auto_' + athlete?.id;
+          const autoSlot = await dbGetById(autoId);
+          if (autoSlot && autoSlot.id !== ref.id) {
+            console.log('[exchange] merging auto slot into named slot:', ref.name);
+            // Merge: named slot keeps its name/level/profile, gets auto slot's data
+            const merged = {
+              token:            access_token,
+              refresh:          refresh_token,
+              expires:          expires_at,
+              strava_id:        athlete?.id,
+              activities:       autoSlot.activities?.length ? autoSlot.activities : ref.activities,
+              monthly_feelings: Object.assign({}, autoSlot.monthly_feelings||{}, ref.monthly_feelings||{}),
+              rpe:              Object.assign({}, autoSlot.rpe||{}, ref.rpe||{}),
+              feedback:         Object.assign({}, autoSlot.feedback||{}, ref.feedback||{}),
+            };
+            await dbUpsert(ref.id, merged);
+            // Delete the auto slot
+            await sbRequest('DELETE', `/referees?id=eq.${encodeURIComponent(autoId)}`);
+            console.log('[exchange] auto slot merged and deleted');
+          } else {
+            await dbUpsert(ref.id, { token: access_token, refresh: refresh_token, expires: expires_at, strava_id: athlete?.id });
+            console.log('[exchange] token saved for', ref.name);
+          }
+        } else {
+          // No match found — create auto slot with token so sync works
+          const autoId = 'auto_' + athlete?.id;
+          const existing = await dbGetById(autoId);
+          const name = [athlete?.firstname, athlete?.lastname].filter(Boolean).join(' ') || 'Athlete';
+          if (existing) {
+            await dbUpsert(autoId, { token: access_token, refresh: refresh_token, expires: expires_at });
+            console.log('[exchange] updated auto slot token for', name);
+          } else {
+            await dbInsert({ id: autoId, name, strava_id: athlete?.id, token: access_token, refresh: refresh_token, expires: expires_at, activities: [], profile: {}, feedback: {}, monthly_feelings: {}, rpe: {} });
+            console.log('[exchange] created auto slot for', name);
+          }
         }
       }
       send(res, 200, { access_token, refresh_token, expires_at, athlete });
