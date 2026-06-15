@@ -614,7 +614,8 @@ const server = http.createServer(async (req, res) => {
           }
           if (updated) {
             await dbUpsert(freshRef.id, { activities: freshRef.activities });
-            console.log(`[stream] background fetch complete for ${freshRef.name}`);
+            const zoneCount = freshRef.activities.filter(a=>a.hr_zones).length;
+      console.log(`[stream] background fetch complete for ${freshRef.name} — ${zoneCount} activities have hr_zones`);
           }
         } catch(e) { console.log('[stream] background fetch error:', e.message); }
       })();
@@ -753,6 +754,7 @@ const server = http.createServer(async (req, res) => {
         return a;
       });
       const exactCount = acts.filter(a => a.hr_zones && a.hr_zones.length === 5).length;
+      console.log(`[activities] ${ref.name}: ${exactCount} exact zones out of ${acts.length}`);
       send(res, 200, { activities: acts, exactZones: exactCount });
     } catch(e) { send(res, 500, { error: e.message }); }
     return;
