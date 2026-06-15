@@ -626,9 +626,14 @@ const server = http.createServer(async (req, res) => {
         ref = { id, name: fullName };
         console.log(`Auto-created slot for ${fullName}`);
       }
-      const mergedProfile = Object.assign({}, ref.profile || {},
-        Object.fromEntries(Object.entries(profile || {}).filter(([,v]) => v !== null && v !== undefined))
+      // Profile is managed via /referee/profile endpoint — don't overwrite here
+      // Only merge if profile fields are explicitly provided (non-null)
+      const incomingProfile = Object.fromEntries(
+        Object.entries(profile || {}).filter(([,v]) => v !== null && v !== undefined && v !== '')
       );
+      const mergedProfile = Object.keys(incomingProfile).length > 0
+        ? Object.assign({}, ref.profile || {}, incomingProfile)
+        : (ref.profile || {});
       // Preserve existing hr_zones — don't overwrite with empty frontend data
       const existingActs = (ref.activities || []).reduce((m,a) => { m[String(a.id)]=a; return m; }, {});
       const mergedActs = activities.map(a => {
