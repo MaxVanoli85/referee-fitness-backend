@@ -228,6 +228,66 @@ function calcZonesFromStream(hrData, timeData, maxHR) {
   return zones; // seconds per zone
 }
 
+// ── Background stream fetch (called after /referee/push) ───────────────────
+async function fetchStreamsInBackground(ref) {
+  // Prevent parallel fetches for the same referee
+  if (fetchStreamsInBackground._running) {
+    if (fetchStreamsInBackground._running[ref.id]) {
+      console.log(`[stream] skipping — already running for ${ref.name}`);
+      return;
+    }
+  } else { fetchStreamsInBackground._running = {}; }
+  fetchStreamsInBackground._running[ref.id] = true;
+
+  try {
+    // Re-read from DB to get fresh token (may have just been saved by /exchange)
+    const freshRef = await dbGetById(ref.id);
+    const refToUse = (freshRef && freshRef.token) ? freshRef : ref;
+
+    console.log(`[stream] starting for ${refToUse.name}, has token: ${!!refToUse.token}`);
+    if (!refToUse.token) { console.log('[stream] no token stored, skipping'); return; }
+
+    const token = await ensureFreshToken(refToUse);
+    if (!token) { console.log('[stream] could not refresh token'); return; }
+
+    const now = Math.floor(Date.now() / 1000);
+    const cutoff90 = now - 60 * 60 * 24 * 90;
+    const profile = refToUse.profile || {};
+    const maxHR = profile.maxhr || (profile.age ? 220 - profile.age : 185);
+
+    // Use activities from DB (most up to date, includes preserved hr_zones)
+    const activities = freshRef ? (freshRef.activities || []) : (ref.activities || []);
+    const toStream = activities.filter(a =>
+      a.average_heartrate &&
+      !a.hr_zones &&  // skip if already have stream data
+      new Date(a.start_date).getTime() / 1000 > cutoff90
+    );
+
+    console.log(`[stream] will fetch ${toStream.length} new streams for ${refToUse.name} (${activities.filter(a=>a.hr_zones).length} already cached)`);
+    if (!toStream.length) { console.log('[stream] all activities already have hr_zones'); return; }
+
+    let updated = false;
+    for (const act of toStream) {
+      await new Promise(r => setTimeout(r, 300));
+      const stream = await fetchHRStream(act.id, token);
+      if (stream) {
+        const zones = calcZonesFromStream(stream.hr, stream.time, maxHR);
+        if (zones) { act.hr_zones = zones; updated = true; }
+      }
+    }
+
+    if (updated) {
+      await dbUpsert(refToUse.id, { activities });
+      const zoneCount = activities.filter(a => a.hr_zones).length;
+      console.log(`[stream] complete for ${refToUse.name} — ${zoneCount} activities have hr_zones`);
+    }
+  } catch(e) {
+    console.log('[stream] error:', e.message);
+  } finally {
+    if (fetchStreamsInBackground._running) delete fetchStreamsInBackground._running[ref.id];
+  }
+}
+
 async function fetchHRStream(activityId, token) {
   return new Promise((resolve) => {
     const opts = {
@@ -305,7 +365,7 @@ async function syncRefereeActivities(ref) {
     new Date(a.start_date).getTime() / 1000 > cutoff90 // last 90 days
   );
 
-  console.log(`[stream] ${ref.name}: fetching streams for ${toStream.length} activities`);
+  console.log(`[stream] ${ref.name}: fetching ${toStream.length} new streams (${all.filter(a=>a.hr_zones).length} already cached)`);
 
   // Rate-limit: Strava allows 100 req/15min. Fetch with small delay.
   for (const act of toStream) {
