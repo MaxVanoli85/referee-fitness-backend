@@ -185,7 +185,7 @@ Génère un rapport mensuel court et professionnel pour l'arbitre ${ref.name} ($
   const avgZ5    = z5weeks.length ? +(z5weeks.reduce((s,v)=>s+v,0)/z5weeks.length).toFixed(1) : 0;
   const onTarget = z5weeks.filter(v=>v>=5).length;
   const z5str    = z5weeks.length
-    ? `${avgZ5} min/semaine en moyenne (${onTarget}/${z5weeks.length} semaines ≥ 5min)`
+    ? (avgZ5 + ' min/semaine en moyenne (' + onTarget + '/' + z5weeks.length + ' semaines ≥ 5min)')
     : 'données insuffisantes';
 
 DONNÉES DU MOIS:
@@ -196,7 +196,7 @@ DONNÉES DU MOIS:
 - Ratio A:C en fin de mois: ${ratio} (${ratio<0.8?'sous-charge':ratio<=1.3?'optimal':ratio<=1.5?'charge élevée':'risque élevé'})
 - Zone 5 (>94% FC max): ${z5str} — OBJECTIF: minimum 5 min/semaine
 - Ressenti mensuel: ${feelingStr}
-- Répartition: ${Object.entries(catCounts).map(([k,v])=>\`${k}: ${v}\`).join(', ')||'aucune activité'}
+- Répartition: ${Object.entries(catCounts).map(([k,v])=>k+': '+v).join(', ')||'aucune activité'}
 
 CONTEXTE SAISONNIER:
 - Tests physiques de la commission : 13 juin de chaque année
