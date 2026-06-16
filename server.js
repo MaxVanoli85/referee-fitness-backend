@@ -170,16 +170,36 @@ async function generateRefereeFeedback(ref, monthKey, prevMonthKey) {
   const prompt = `Tu es l'entraîneur de la Commission d'Arbitrage du Luxembourg. 
 Génère un rapport mensuel court et professionnel pour l'arbitre ${ref.name} (${role}${level?' / '+level:''}) pour le mois de ${monthKey}.
 
+  // Compute Z5 per week from hr_zones
+  const weekZ5 = {};
+  acts.forEach(a => {
+    if (!a.start_date) return;
+    const d = new Date(a.start_date);
+    const dow = (d.getDay() + 6) % 7;
+    const mon = new Date(d); mon.setDate(d.getDate() - dow);
+    const wk  = mon.toISOString().slice(0,10);
+    if (!weekZ5[wk]) weekZ5[wk] = 0;
+    if (a.hr_zones && a.hr_zones.length === 5) weekZ5[wk] += (a.hr_zones[4]||0)/60;
+  });
+  const z5weeks  = Object.values(weekZ5);
+  const avgZ5    = z5weeks.length ? +(z5weeks.reduce((s,v)=>s+v,0)/z5weeks.length).toFixed(1) : 0;
+  const onTarget = z5weeks.filter(v=>v>=5).length;
+  const z5str    = z5weeks.length
+    ? `${avgZ5} min/semaine en moyenne (${onTarget}/${z5weeks.length} semaines ≥ 5min)`
+    : 'données insuffisantes';
+
 DONNÉES DU MOIS:
 - Séances: ${sessions} (mois précédent: ${prevSessions})
 - Matchs officié(s): ${matches} (mois précédent: ${prevMatches})
 - Kilomètres courus: ${runKm} km
 - Temps actif: ${Math.floor(activeMins/60)}h${activeMins%60}m
 - Ratio A:C en fin de mois: ${ratio} (${ratio<0.8?'sous-charge':ratio<=1.3?'optimal':ratio<=1.5?'charge élevée':'risque élevé'})
+- Zone 5 (>94% FC max): ${z5str} — OBJECTIF: minimum 5 min/semaine
 - Ressenti mensuel: ${feelingStr}
-- Répartition: ${Object.entries(catCounts).map(([k,v])=>`${k}: ${v}`).join(', ')||'aucune activité'}
+- Répartition: ${Object.entries(catCounts).map(([k,v])=>\`${k}: ${v}\`).join(', ')||'aucune activité'}
 
 INSTRUCTIONS:
+Mentionne explicitement si l'objectif Z5 (≥5 min/semaine) est atteint ou non dans la recommandation.
 Rédige exactement 4 champs courts en français, chacun sur une ligne, au format JSON:
 {
   "load": "évaluation de la charge en 1 phrase (ex: Charge bien dosée avec X séances dont Y matchs)",
