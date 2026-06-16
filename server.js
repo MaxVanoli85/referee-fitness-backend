@@ -67,8 +67,218 @@ async function runDailySync() {
   }
 }
 
+// ── AI Feedback Generation ─────────────────────────────────────────────────
+// Runs on the 5th of each month at 03:00 UTC
+
+function scheduleMonthlyFeedback() {
+  const now  = new Date();
+  const next = new Date();
+  // Find next 5th of month at 03:00 UTC
+  next.setUTCHours(3, 0, 0, 0);
+  next.setUTCDate(5);
+  if (next <= now) next.setUTCMonth(next.getUTCMonth() + 1);
+  const msUntil = next - now;
+  console.log(`[ai-feedback] next run in ${Math.round(msUntil/3600000)}h (${next.toISOString()})`);
+  setTimeout(async () => {
+    await runMonthlyFeedback();
+    scheduleMonthlyFeedback();
+  }, msUntil);
+}
+
+async function generateRefereeFeedback(ref, monthKey, prevMonthKey) {
+  // Build data summary for Claude
+  const acts     = (ref.activities || []).filter(a => {
+    if (!a.start_date) return false;
+    return a.start_date.startsWith(monthKey);
+  });
+  const prevActs = (ref.activities || []).filter(a => {
+    if (!a.start_date) return false;
+    return a.start_date.startsWith(prevMonthKey);
+  });
+
+  // Compute key stats
+  const CAT_WEIGHTS = { match:1.0, high:1.0, medium:0.75, endurance:0.5, strength:0.5, recovery:0, alternative:0 };
+  const ZONE_BOUNDS = [0.60, 0.76, 0.86, 0.94];
+
+  function hrZone(hr, maxHR) {
+    const p = hr/maxHR;
+    if (p < ZONE_BOUNDS[0]) return 'Z1';
+    if (p < ZONE_BOUNDS[1]) return 'Z2';
+    if (p < ZONE_BOUNDS[2]) return 'Z3';
+    if (p < ZONE_BOUNDS[3]) return 'Z4';
+    return 'Z5';
+  }
+
+  function catKey(a) {
+    if (a._cat) return a._cat;
+    const name = (a.name||'').toLowerCase();
+    const MATCH_KW = ['bgl','ph','d1','d2','d3','coupe','cdl','match','vs',' fc ','game'];
+    if (MATCH_KW.some(k=>name.includes(k))) return 'match';
+    const ALT = ['Ride','VirtualRide','Swim','Walk','Hike','Rowing','Elliptical','WeightTraining','Yoga','Pilates','Crossfit'];
+    if (ALT.includes(a.type)||ALT.includes(a.sport_type)) return 'alternative';
+    if (a.type==='WeightTraining'||a.sport_type==='WeightTraining') return 'strength';
+    const hr = a.average_heartrate||0;
+    const dur = (a.moving_time||a.elapsed_time||0)/60;
+    if (hr>=155&&dur>=75&&dur<=130) return 'match';
+    if (hr>=155) return 'high';
+    if (hr>=145&&dur<45) return 'high';
+    if (hr>=138&&dur>=45) return 'medium';
+    if (hr>=125&&dur>=50) return 'endurance';
+    if (hr>0&&hr<125) return 'recovery';
+    return 'other';
+  }
+
+  const profile  = ref.profile || {};
+  const maxHR    = profile.maxhr || (profile.age ? 220 - profile.age : 185);
+  const role     = profile.role || 'Referee';
+  const level    = profile.level || '';
+
+  // Current month stats
+  const sessions    = acts.length;
+  const matches     = acts.filter(a=>catKey(a)==='match').length;
+  const runKm       = +(acts.filter(a=>['Run','TrailRun'].includes(a.type||a.sport_type))
+    .reduce((s,a)=>s+(a.distance||0),0)/1000).toFixed(1);
+  const activeMins  = Math.round(acts.filter(a=>!['alternative','recovery'].includes(catKey(a)))
+    .reduce((s,a)=>s+(a.moving_time||a.elapsed_time||0),0)/60);
+
+  // A:C ratio at end of month
+  const [y,m] = monthKey.split('-').map(Number);
+  const monthEnd = new Date(y, m, 0, 23, 59, 59);
+  const msDay = 86400000;
+  const allActs = ref.activities || [];
+  const acute7  = allActs.filter(a=>a.start_date&&(monthEnd-new Date(a.start_date))>=0&&(monthEnd-new Date(a.start_date))<=7*msDay);
+  const chron28 = allActs.filter(a=>a.start_date&&(monthEnd-new Date(a.start_date))>=0&&(monthEnd-new Date(a.start_date))<=28*msDay);
+  function weekLoad(arr) { return arr.reduce((s,a)=>s+(Math.round((a.moving_time||a.elapsed_time||0)/60*(CAT_WEIGHTS[catKey(a)]??0.5))),0); }
+  const acuteLoad   = weekLoad(acute7);
+  const chronicLoad = Math.round(weekLoad(chron28)/4);
+  const ratio       = chronicLoad>0 ? +(acuteLoad/chronicLoad).toFixed(2) : 0;
+
+  // Category breakdown
+  const catCounts = {};
+  acts.forEach(a => { const k=catKey(a); catCounts[k]=(catCounts[k]||0)+1; });
+
+  // Monthly feeling
+  const feelingVal = (ref.monthly_feelings||{})[monthKey] || 0;
+  const FEELINGS   = ['','😴 Épuisé','😕 Fatigué','😊 Bien','💪 En forme','🔥 Au top'];
+  const feelingStr = feelingVal ? FEELINGS[feelingVal] : 'non renseigné';
+
+  // Previous month comparison
+  const prevSessions = prevActs.length;
+  const prevMatches  = prevActs.filter(a=>catKey(a)==='match').length;
+
+  // Build prompt
+  const prompt = `Tu es l'entraîneur de la Commission d'Arbitrage du Luxembourg. 
+Génère un rapport mensuel court et professionnel pour l'arbitre ${ref.name} (${role}${level?' / '+level:''}) pour le mois de ${monthKey}.
+
+DONNÉES DU MOIS:
+- Séances: ${sessions} (mois précédent: ${prevSessions})
+- Matchs officié(s): ${matches} (mois précédent: ${prevMatches})
+- Kilomètres courus: ${runKm} km
+- Temps actif: ${Math.floor(activeMins/60)}h${activeMins%60}m
+- Ratio A:C en fin de mois: ${ratio} (${ratio<0.8?'sous-charge':ratio<=1.3?'optimal':ratio<=1.5?'charge élevée':'risque élevé'})
+- Ressenti mensuel: ${feelingStr}
+- Répartition: ${Object.entries(catCounts).map(([k,v])=>`${k}: ${v}`).join(', ')||'aucune activité'}
+
+INSTRUCTIONS:
+Rédige exactement 4 champs courts en français, chacun sur une ligne, au format JSON:
+{
+  "load": "évaluation de la charge en 1 phrase (ex: Charge bien dosée avec X séances dont Y matchs)",
+  "fitness": "état de forme en 1 phrase basé sur le ratio A:C et le ressenti",
+  "recommendation": "1 recommandation concrète et actionnable pour le mois suivant",
+  "notes": "1 observation complémentaire si pertinente, sinon chaîne vide"
+}
+Réponds UNIQUEMENT avec le JSON, sans texte avant ou après.`;
+
+  // Call Claude API
+  const body = JSON.stringify({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 400,
+    messages: [{ role: 'user', content: prompt }]
+  });
+
+  return new Promise((resolve) => {
+    const opts = {
+      hostname: 'api.anthropic.com',
+      path: '/v1/messages',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Length': Buffer.byteLength(body)
+      }
+    };
+    const req = https.request(opts, res => {
+      let d = '';
+      res.on('data', c => d += c);
+      res.on('end', () => {
+        try {
+          const r = JSON.parse(d);
+          const text = r.content?.[0]?.text || '';
+          const clean = text.replace(/```json|```/g, '').trim();
+          const fb = JSON.parse(clean);
+          resolve(fb);
+        } catch(e) {
+          console.log('[ai-feedback] parse error:', e.message);
+          resolve(null);
+        }
+      });
+    });
+    req.on('error', (e) => { console.log('[ai-feedback] request error:', e.message); resolve(null); });
+    req.write(body);
+    req.end();
+  });
+}
+
+async function runMonthlyFeedback() {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.log('[ai-feedback] ANTHROPIC_API_KEY not set — skipping');
+    return;
+  }
+  // Generate for the PREVIOUS month
+  const now  = new Date();
+  const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const monthKey     = prev.getFullYear() + '-' + String(prev.getMonth()+1).padStart(2,'0');
+  const prevPrev     = new Date(prev.getFullYear(), prev.getMonth() - 1, 1);
+  const prevMonthKey = prevPrev.getFullYear() + '-' + String(prevPrev.getMonth()+1).padStart(2,'0');
+
+  console.log(`[ai-feedback] generating drafts for ${monthKey}`);
+  const refs = await dbGetAll();
+  const connected = refs.filter(r => r.token);
+  let ok = 0, skipped = 0;
+
+  for (const ref of connected) {
+    try {
+      // Skip if feedback already exists (don't overwrite validated feedback)
+      const existing = (ref.feedback || {})[monthKey];
+      if (existing && existing.validated) { skipped++; continue; }
+      // Skip if no activities this month
+      const hasActs = (ref.activities || []).some(a => a.start_date && a.start_date.startsWith(monthKey));
+      if (!hasActs) { skipped++; continue; }
+
+      const fb = await generateRefereeFeedback(ref, monthKey, prevMonthKey);
+      if (fb) {
+        const updatedFeedback = Object.assign({}, ref.feedback || {});
+        updatedFeedback[monthKey] = {
+          ...fb,
+          draft: true,      // marks it as AI draft, not yet validated
+          updatedAt: new Date().toISOString()
+        };
+        await dbUpsert(ref.id, { feedback: updatedFeedback });
+        console.log(`[ai-feedback] ✓ draft for ${ref.name}`);
+        ok++;
+      }
+      await new Promise(r => setTimeout(r, 1000)); // 1s between refs
+    } catch(e) {
+      console.log(`[ai-feedback] ✗ ${ref.name}:`, e.message);
+    }
+  }
+  console.log(`[ai-feedback] complete — ${ok} drafts generated, ${skipped} skipped`);
+}
+
 // Start the scheduler
 scheduleDailySync();
+scheduleMonthlyFeedback();
 
 // ── Supabase REST helpers ───────────────────────────────────────────
 function sbRequest(method, path, body) {
