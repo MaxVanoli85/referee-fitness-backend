@@ -245,11 +245,12 @@ async function runMonthlyFeedback() {
   console.log(`[ai-feedback] generating drafts for ${monthKey}`);
   const refs = await dbGetAll();
   const connected = refs.filter(r => r.token);
+  console.log(`[ai-feedback] generating for ${connected.length} connected referees`);
   let ok = 0, skipped = 0;
 
   for (const ref of connected) {
     try {
-      // Skip if feedback already exists (don't overwrite validated feedback)
+      // Skip if feedback already exists and validated
       const existing = (ref.feedback || {})[monthKey];
       if (existing && existing.validated) { skipped++; continue; }
       // Skip if no activities this month
