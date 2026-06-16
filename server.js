@@ -198,9 +198,17 @@ DONNÉES DU MOIS:
 - Ressenti mensuel: ${feelingStr}
 - Répartition: ${Object.entries(catCounts).map(([k,v])=>\`${k}: ${v}\`).join(', ')||'aucune activité'}
 
+CONTEXTE SAISONNIER:
+- Tests physiques de la commission : 13 juin de chaque année
+- Coupure estivale : 2 dernières semaines de juin (pas d'entraînement planifié)
+- Si le mois analysé est juin : tenir compte de la coupure et des tests physiques dans l'évaluation
+- Si le mois précède juin : mentionner la préparation aux tests si pertinent
+
 INSTRUCTIONS:
-Mentionne explicitement si l'objectif Z5 (≥5 min/semaine) est atteint ou non dans la recommandation.
-Rédige exactement 4 champs courts en français, chacun sur une ligne, au format JSON:
+- Utilise le tutoiement (tu/ton/tes) — jamais le vouvoiement
+- Mentionne explicitement si l'objectif Z5 (≥5 min/semaine) est atteint ou non
+- Si le mois est juin, tiens compte de la coupure des 2 dernières semaines et des tests du 13 juin
+- Rédige exactement 4 champs courts en français, au format JSON:
 {
   "load": "évaluation de la charge en 1 phrase (ex: Charge bien dosée avec X séances dont Y matchs)",
   "fitness": "état de forme en 1 phrase basé sur le ratio A:C et le ressenti",
