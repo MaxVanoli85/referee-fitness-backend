@@ -453,18 +453,37 @@ function hrToZoneIndex(hr, maxHR) {
 }
 
 function calcZonesFromStream(hrData, timeData, maxHR) {
-  // hrData: array of HR values (bpm), timeData: array of elapsed seconds
-  // Returns array of 5 values: seconds spent in each zone
+  // Returns { zones: [s1..s5], trimp: number }
   const zones = [0, 0, 0, 0, 0];
   if (!hrData || !timeData || hrData.length < 2) return null;
   for (let i = 1; i < hrData.length; i++) {
-    const dt = timeData[i] - timeData[i - 1]; // seconds since last point
-    if (dt <= 0 || dt > 60) continue; // skip gaps > 1 min (pauses)
+    const dt = timeData[i] - timeData[i - 1];
+    if (dt <= 0 || dt > 60) continue;
     const hr = hrData[i];
-    if (!hr || hr < 30 || hr > 250) continue; // skip invalid readings
+    if (!hr || hr < 30 || hr > 250) continue;
     zones[hrToZoneIndex(hr, maxHR)] += dt;
   }
-  return zones; // seconds per zone
+  return zones;
+}
+
+// Banister TRIMP from HR stream — gold-standard training load
+// TRIMP = Σ dt(min) × HRr × 0.64 × e^(1.92 × HRr)   [male coefficient]
+function calcTrimpFromStream(hrData, timeData, maxHR, restHR) {
+  if (!hrData || !timeData || hrData.length < 2) return 0;
+  const hrRest = restHR || 60;
+  const hrReserve = maxHR - hrRest;
+  if (hrReserve <= 0) return 0;
+  let trimp = 0;
+  for (let i = 1; i < hrData.length; i++) {
+    const dt = timeData[i] - timeData[i - 1];
+    if (dt <= 0 || dt > 60) continue;
+    const hr = hrData[i];
+    if (!hr || hr < 30 || hr > 250) continue;
+    const hrr = Math.max(0, Math.min(1, (hr - hrRest) / hrReserve));
+    const dtMin = dt / 60;
+    trimp += dtMin * hrr * 0.64 * Math.exp(1.92 * hrr);
+  }
+  return Math.round(trimp);
 }
 
 // ── Background stream fetch (called after /referee/push) ───────────────────
@@ -511,7 +530,11 @@ async function fetchStreamsInBackground(ref) {
       const stream = await fetchHRStream(act.id, token);
       if (stream) {
         const zones = calcZonesFromStream(stream.hr, stream.time, maxHR);
-        if (zones) { act.hr_zones = zones; updated = true; }
+        if (zones) {
+          act.hr_zones = zones;
+          act.trimp = calcTrimpFromStream(stream.hr, stream.time, maxHR, profile.resthr);
+          updated = true;
+        }
       }
     }
 
@@ -611,6 +634,7 @@ async function syncRefereeActivities(ref) {
   all.forEach(a => {
     const prev = existing[String(a.id)];
     if (prev && prev.hr_zones) a.hr_zones = prev.hr_zones;
+    if (prev && typeof prev.trimp === 'number') a.trimp = prev.trimp;
   });
 
   // Only fetch streams for activities without hr_zones
@@ -619,7 +643,7 @@ async function syncRefereeActivities(ref) {
   const maxHR    = profile.maxhr || (profile.age ? 220 - profile.age : 185);
   const toStream = all.filter(a =>
     a.average_heartrate &&
-    !a.hr_zones &&
+    (!a.hr_zones || typeof a.trimp !== 'number') &&  // re-fetch if missing zones OR trimp
     new Date(a.start_date).getTime() / 1000 > cutoff90
   );
 
@@ -630,7 +654,10 @@ async function syncRefereeActivities(ref) {
     const stream = await fetchHRStream(act.id, token);
     if (stream) {
       const zones = calcZonesFromStream(stream.hr, stream.time, maxHR);
-      if (zones) act.hr_zones = zones;
+      if (zones) {
+        act.hr_zones = zones;
+        act.trimp = calcTrimpFromStream(stream.hr, stream.time, maxHR, profile.resthr);
+      }
     }
   }
 
@@ -877,7 +904,10 @@ const server = http.createServer(async (req, res) => {
       const existingActs = (ref.activities || []).reduce((m,a) => { m[String(a.id)]=a; return m; }, {});
       const mergedActs = activities.map(a => {
         const prev = existingActs[String(a.id)];
-        return (prev && prev.hr_zones) ? { ...a, hr_zones: prev.hr_zones } : a;
+        if (prev && (prev.hr_zones || prev.trimp)) {
+          return { ...a, hr_zones: prev.hr_zones, trimp: prev.trimp };
+        }
+        return a;
       });
 
       await dbUpsert(ref.id, {
