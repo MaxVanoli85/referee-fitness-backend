@@ -623,7 +623,8 @@ async function syncRefereeActivities(ref) {
     if (!Array.isArray(r) || !r.length) break;
     all = all.concat(r.map(a => ({
       id: a.id, name: a.name, type: a.type, sport_type: a.sport_type,
-      start_date: a.start_date, elapsed_time: a.elapsed_time, moving_time: a.moving_time,
+      start_date: a.start_date, start_date_local: a.start_date_local,
+      elapsed_time: a.elapsed_time, moving_time: a.moving_time,
       distance: a.distance, average_heartrate: a.average_heartrate, max_heartrate: a.max_heartrate
     })));
     if (r.length < 100) break;
