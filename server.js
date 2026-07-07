@@ -256,13 +256,28 @@ Réponds UNIQUEMENT avec le JSON, sans texte avant ou après.`;
       res.on('data', c => d += c);
       res.on('end', () => {
         try {
+          if (res.statusCode !== 200) {
+            console.log('[ai-feedback] API status ' + res.statusCode + ':', d.slice(0, 300));
+            resolve(null);
+            return;
+          }
           const r = JSON.parse(d);
+          if (r.error) {
+            console.log('[ai-feedback] API error:', JSON.stringify(r.error).slice(0, 300));
+            resolve(null);
+            return;
+          }
           const text = r.content?.[0]?.text || '';
+          if (!text) {
+            console.log('[ai-feedback] empty text. Full response:', JSON.stringify(r).slice(0, 300));
+            resolve(null);
+            return;
+          }
           const clean = text.replace(/```json|```/g, '').trim();
           const fb = JSON.parse(clean);
           resolve(fb);
         } catch(e) {
-          console.log('[ai-feedback] parse error:', e.message);
+          console.log('[ai-feedback] parse error:', e.message, '| raw:', d.slice(0, 200));
           resolve(null);
         }
       });
