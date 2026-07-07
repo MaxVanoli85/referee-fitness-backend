@@ -79,10 +79,16 @@ function scheduleMonthlyFeedback() {
   if (next <= now) next.setUTCMonth(next.getUTCMonth() + 1);
   const msUntil = next - now;
   console.log(`[ai-feedback] next run in ${Math.round(msUntil/3600000)}h (${next.toISOString()})`);
-  setTimeout(async () => {
-    await runMonthlyFeedback();
-    scheduleMonthlyFeedback();
-  }, msUntil);
+  // setTimeout max is ~24.8 days (2^31 ms). For longer waits, chunk it.
+  const MAX_TIMEOUT = 2000000000; // ~23 days
+  if (msUntil > MAX_TIMEOUT) {
+    setTimeout(() => scheduleMonthlyFeedback(), MAX_TIMEOUT);
+  } else {
+    setTimeout(async () => {
+      await runMonthlyFeedback();
+      scheduleMonthlyFeedback();
+    }, msUntil);
+  }
 }
 
 
@@ -176,9 +182,6 @@ async function generateRefereeFeedback(ref, monthKey, prevMonthKey) {
   const prevMatches  = prevActs.filter(a=>catKey(a)==='match').length;
 
   // Build prompt
-  const prompt = `Tu es l'entraîneur de la Commission d'Arbitrage du Luxembourg. 
-Génère un rapport mensuel court et professionnel pour l'arbitre ${ref.name} (${role}${level?' / '+level:''}) pour le mois de ${monthKey}.
-
   // Compute Z5 per week from hr_zones
   const weekZ5 = {};
   acts.forEach(a => {
@@ -194,8 +197,11 @@ Génère un rapport mensuel court et professionnel pour l'arbitre ${ref.name} ($
   const avgZ5    = z5weeks.length ? +(z5weeks.reduce((s,v)=>s+v,0)/z5weeks.length).toFixed(1) : 0;
   const onTarget = z5weeks.filter(v=>v>=5).length;
   const z5str    = z5weeks.length
-    ? (avgZ5 + ' min/semaine en moyenne (' + onTarget + '/' + z5weeks.length + ' semaines ≥ 5min)')
-    : 'données insuffisantes';
+    ? (avgZ5 + ' min/semaine en moyenne (' + onTarget + '/' + z5weeks.length + ' semaines >= 5min)')
+    : 'donnees insuffisantes';
+
+  const prompt = `Tu es l'entraîneur de la Commission d'Arbitrage du Luxembourg. 
+Génère un rapport mensuel court et professionnel pour l'arbitre ${ref.name} (${role}${level?' / '+level:''}) pour le mois de ${monthKey}.
 
 DONNÉES DU MOIS:
 - Séances: ${sessions} (mois précédent: ${prevSessions})
