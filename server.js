@@ -85,6 +85,15 @@ function scheduleMonthlyFeedback() {
   }, msUntil);
 }
 
+
+// Timezone-safe check: does activity belong to a given month key (YYYY-MM)?
+function actInMonth(a, monthKey) {
+  const d = a.start_date_local || a.start_date;
+  if (!d) return false;
+  const m = String(d).match(/^(\d{4})-(\d{2})/);
+  return m ? (m[1] + '-' + m[2]) === monthKey : false;
+}
+
 async function generateRefereeFeedback(ref, monthKey, prevMonthKey) {
   // Build data summary for Claude
   const acts     = (ref.activities || []).filter(a => {
@@ -1090,6 +1099,52 @@ const server = http.createServer(async (req, res) => {
       });
       const exactCount = acts.filter(a => a.hr_zones && a.hr_zones.length === 5).length;
       send(res, 200, { activities: acts, exactZones: exactCount });
+    } catch(e) { send(res, 500, { error: e.message }); }
+    return;
+  }
+
+  // ── /coach/generate-feedback — manually trigger AI feedback for a month ────
+  if (req.method === 'POST' && req.url.startsWith('/coach/generate-feedback')) {
+    const pin = req.headers['x-coach-pin'];
+    if (pin !== COACH_PIN) { send(res, 401, { error: 'Unauthorized' }); return; }
+    try {
+      const body = await readBody(req);
+      const monthKey = body.monthKey; // e.g. "2026-06"
+      if (!monthKey) { send(res, 400, { error: 'Missing monthKey' }); return; }
+      if (!process.env.ANTHROPIC_API_KEY) {
+        send(res, 400, { error: 'ANTHROPIC_API_KEY not configured on server' });
+        return;
+      }
+      // Respond immediately, generate in background
+      send(res, 200, { ok: true, message: 'Generation started for ' + monthKey });
+
+      (async () => {
+        const [y,m] = monthKey.split('-').map(Number);
+        const prevDate = new Date(y, m-2, 1);
+        const prevMonthKey = prevDate.getFullYear() + '-' + String(prevDate.getMonth()+1).padStart(2,'0');
+        console.log('[ai-feedback] manual generation for ' + monthKey);
+        const refs = await dbGetAll();
+        const connected = refs.filter(r => r.token);
+        let ok = 0;
+        for (const ref of connected) {
+          try {
+            const existing = (ref.feedback || {})[monthKey];
+            if (existing && existing.validated) continue; // don't overwrite validated
+            const hasActs = (ref.activities || []).some(a => actInMonth(a, monthKey));
+            if (!hasActs) continue;
+            const fb = await generateRefereeFeedback(ref, monthKey, prevMonthKey);
+            if (fb) {
+              const updatedFeedback = Object.assign({}, ref.feedback || {});
+              updatedFeedback[monthKey] = { ...fb, draft: true, updatedAt: new Date().toISOString() };
+              await dbUpsert(ref.id, { feedback: updatedFeedback });
+              console.log('[ai-feedback] ✓ draft for ' + ref.name);
+              ok++;
+            }
+            await new Promise(r => setTimeout(r, 1000));
+          } catch(e) { console.log('[ai-feedback] ✗ ' + ref.name + ':', e.message); }
+        }
+        console.log('[ai-feedback] manual generation complete — ' + ok + ' drafts');
+      })();
     } catch(e) { send(res, 500, { error: e.message }); }
     return;
   }
