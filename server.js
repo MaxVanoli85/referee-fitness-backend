@@ -352,7 +352,7 @@ function sbRequest(method, path, body) {
         'apikey':        SUPABASE_KEY,
         'Authorization': 'Bearer ' + SUPABASE_KEY,
         'Content-Type':  'application/json',
-        'Prefer':        method === 'POST' ? 'return=representation' : 'return=representation',
+        'Prefer':        method === 'POST' ? 'return=representation' : 'return=minimal',
       }
     };
     if (data) opts.headers['Content-Length'] = Buffer.byteLength(data);
@@ -370,10 +370,21 @@ function sbRequest(method, path, body) {
   });
 }
 
-async function dbGetAll() {
+let _dbCache = { data: null, ts: 0 };
+const DB_CACHE_TTL = 30000; // 30 seconds
+
+async function dbGetAll(force) {
+  const now = Date.now();
+  if (!force && _dbCache.data && (now - _dbCache.ts) < DB_CACHE_TTL) {
+    return _dbCache.data;
+  }
   const r = await sbRequest('GET', '/referees?select=*&order=created_at.asc');
-  return r.body || [];
+  _dbCache = { data: r.body || [], ts: now };
+  return _dbCache.data;
 }
+
+// Invalidate cache after any write
+function invalidateDbCache() { _dbCache = { data: null, ts: 0 }; }
 
 async function dbGetByStravaId(stravaId) {
   const r = await sbRequest('GET', `/referees?strava_id=eq.${stravaId}&select=*`);
@@ -393,15 +404,20 @@ async function dbGetByFirstName(firstName) {
 }
 
 async function dbUpsert(id, fields) {
-  // PATCH existing row
+  // PATCH existing row (return=minimal → 204 No Content, no body = less egress)
   const r = await sbRequest('PATCH',
     `/referees?id=eq.${encodeURIComponent(id)}`,
     fields
   );
-  if (r.status === 404 || (r.body && Array.isArray(r.body) && r.body.length === 0)) {
-    // Row doesn't exist — insert
-    await sbRequest('POST', '/referees', { id, name: fields.name || 'Athlete', ...fields });
+  // With return=minimal, a successful PATCH returns 204. 404 or error means check existence.
+  if (r.status === 404 || r.status === 400) {
+    // Verify row exists with a lightweight id-only query
+    const check = await sbRequest('GET', `/referees?id=eq.${encodeURIComponent(id)}&select=id`);
+    if (!check.body || !check.body.length) {
+      await sbRequest('POST', '/referees', { id, name: fields.name || 'Athlete', ...fields });
+    }
   }
+  invalidateDbCache();
   return true;
 }
 
