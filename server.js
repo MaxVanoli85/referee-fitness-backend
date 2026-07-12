@@ -27,6 +27,17 @@ setInterval(() => {
 
 // ── Scheduled daily sync ────────────────────────────────────────────────────
 // Runs every day at 02:00 Luxembourg time (UTC+1/+2)
+// Overflow-safe setTimeout: setTimeout max is 2^31-1 ms (~24.8 days).
+// Anything larger silently fires after 1ms — the bug that caused runaway egress.
+const MAX_TIMEOUT_MS = 2000000000; // ~23 days, safely under the 32-bit limit
+function safeSetTimeout(fn, ms) {
+  if (ms > MAX_TIMEOUT_MS) {
+    setTimeout(() => safeSetTimeout(fn, ms - MAX_TIMEOUT_MS), MAX_TIMEOUT_MS);
+  } else {
+    setTimeout(fn, Math.max(0, ms));
+  }
+}
+
 function scheduleDailySync() {
   const now = new Date();
   // Target: 02:00 CET (UTC+1) = 01:00 UTC, or CEST (UTC+2) = 00:00 UTC
@@ -36,13 +47,28 @@ function scheduleDailySync() {
   if (next <= now) next.setUTCDate(next.getUTCDate() + 1); // push to tomorrow
   const msUntil = next - now;
   console.log(`[cron] next daily sync in ${Math.round(msUntil/60000)} minutes (${next.toISOString()})`);
-  setTimeout(async () => {
+  safeSetTimeout(async () => {
     await runDailySync();
     scheduleDailySync(); // reschedule for next day
   }, msUntil);
 }
 
+let _dailySyncRunning = false;
+let _lastDailySyncRun = 0;
+
 async function runDailySync() {
+  // SAFETY: prevent re-entry and rapid repeat runs
+  if (_dailySyncRunning) {
+    console.log('[cron] already running — skipping duplicate call');
+    return;
+  }
+  const sinceLast = Date.now() - _lastDailySyncRun;
+  if (sinceLast < 60 * 60 * 1000) { // min 1 hour between runs
+    console.log('[cron] ran ' + Math.round(sinceLast/60000) + 'min ago — skipping (min 1h between runs)');
+    return;
+  }
+  _dailySyncRunning = true;
+  _lastDailySyncRun = Date.now();
   console.log('[cron] starting daily sync —', new Date().toISOString());
   try {
     const refs = await dbGetAll();
@@ -64,6 +90,8 @@ async function runDailySync() {
     console.log(`[cron] daily sync complete — ${success} ok, ${failed} failed`);
   } catch(e) {
     console.log('[cron] daily sync error:', e.message);
+  } finally {
+    _dailySyncRunning = false;
   }
 }
 
@@ -79,16 +107,10 @@ function scheduleMonthlyFeedback() {
   if (next <= now) next.setUTCMonth(next.getUTCMonth() + 1);
   const msUntil = next - now;
   console.log(`[ai-feedback] next run in ${Math.round(msUntil/3600000)}h (${next.toISOString()})`);
-  // setTimeout max is ~24.8 days (2^31 ms). For longer waits, chunk it.
-  const MAX_TIMEOUT = 2000000000; // ~23 days
-  if (msUntil > MAX_TIMEOUT) {
-    setTimeout(() => scheduleMonthlyFeedback(), MAX_TIMEOUT);
-  } else {
-    setTimeout(async () => {
-      await runMonthlyFeedback();
-      scheduleMonthlyFeedback();
-    }, msUntil);
-  }
+  safeSetTimeout(async () => {
+    await runMonthlyFeedback();
+    scheduleMonthlyFeedback();
+  }, msUntil);
 }
 
 
@@ -288,11 +310,27 @@ Réponds UNIQUEMENT avec le JSON, sans texte avant ou après.`;
   });
 }
 
+let _monthlyFeedbackRunning = false;
+let _lastMonthlyFeedbackRun = 0;
+
 async function runMonthlyFeedback() {
+  // SAFETY: prevent re-entry and rapid repeat runs (guards against scheduler bugs)
+  if (_monthlyFeedbackRunning) {
+    console.log('[ai-feedback] already running — skipping duplicate call');
+    return;
+  }
+  const sinceLast = Date.now() - _lastMonthlyFeedbackRun;
+  if (sinceLast < 6 * 60 * 60 * 1000) { // min 6 hours between runs
+    console.log('[ai-feedback] ran ' + Math.round(sinceLast/60000) + 'min ago — skipping (min 6h between runs)');
+    return;
+  }
   if (!process.env.ANTHROPIC_API_KEY) {
     console.log('[ai-feedback] ANTHROPIC_API_KEY not set — skipping');
     return;
   }
+  _monthlyFeedbackRunning = true;
+  _lastMonthlyFeedbackRun = Date.now();
+  try {
   // Generate for the PREVIOUS month
   const now  = new Date();
   const prev = new Date(now.getFullYear(), now.getMonth() - 1, 1);
@@ -333,6 +371,9 @@ async function runMonthlyFeedback() {
     }
   }
   console.log(`[ai-feedback] complete — ${ok} drafts generated, ${skipped} skipped`);
+  } finally {
+    _monthlyFeedbackRunning = false;
+  }
 }
 
 // Start the scheduler
@@ -371,12 +412,41 @@ function sbRequest(method, path, body) {
 }
 
 let _dbCache = { data: null, ts: 0 };
-const DB_CACHE_TTL = 30000; // 30 seconds
+const DB_CACHE_TTL = 60000; // 60 seconds — longer cache = less egress
+
+// ── Circuit breaker: hard cap on full-table reads per hour ──────────────────
+// Normal usage: a handful per hour. A runaway loop would spike to thousands.
+// This is the last line of defence against the kind of bug that burned 850GB.
+let _fullReadCount = 0;
+let _fullReadWindowStart = Date.now();
+const MAX_FULL_READS_PER_HOUR = 200;
+
+function checkReadBudget() {
+  const now = Date.now();
+  if (now - _fullReadWindowStart > 3600000) {
+    _fullReadCount = 0;
+    _fullReadWindowStart = now;
+  }
+  _fullReadCount++;
+  if (_fullReadCount > MAX_FULL_READS_PER_HOUR) {
+    console.error('[SAFETY] Full-table read budget exceeded (' + _fullReadCount +
+      '/hour). Blocking further reads to protect bandwidth. Investigate for a loop.');
+    return false;
+  }
+  if (_fullReadCount === 50 || _fullReadCount === 100 || _fullReadCount === 150) {
+    console.warn('[SAFETY] Elevated read count this hour: ' + _fullReadCount);
+  }
+  return true;
+}
 
 async function dbGetAll(force) {
   const now = Date.now();
   if (!force && _dbCache.data && (now - _dbCache.ts) < DB_CACHE_TTL) {
     return _dbCache.data;
+  }
+  if (!checkReadBudget()) {
+    // Budget exhausted — serve stale cache rather than hammering Supabase
+    return _dbCache.data || [];
   }
   const r = await sbRequest('GET', '/referees?select=*&order=created_at.asc');
   _dbCache = { data: r.body || [], ts: now };
@@ -964,42 +1034,9 @@ const server = http.createServer(async (req, res) => {
         profile: mergedProfile,
         ...(stravaFirstname && ref.id.startsWith('auto_') ? { name: [stravaFirstname, stravaLastname].filter(Boolean).join(' ') } : {})
       });
-      // Fetch HR streams for recent activities with HR data (async, don't block response)
+      // Respond immediately, then fetch HR streams in background (guarded against parallel runs)
       send(res, 200, { ok: true, name: ref.name, count: activities.length });
-      // Background stream fetch after responding
-      (async () => {
-        try {
-          const freshRef = await dbGetById(ref.id);
-          console.log(`[stream] starting for ${ref.name}, has token: ${!!freshRef?.token}`);
-          if (!freshRef || !freshRef.token) { console.log('[stream] no token stored, skipping'); return; }
-          const token = await ensureFreshToken(freshRef);
-          if (!token) { console.log('[stream] could not refresh token'); return; }
-          const now = Math.floor(Date.now() / 1000);
-          const cutoff90 = now - 60 * 60 * 24 * 90;
-          const profile = freshRef.profile || {};
-          const maxHR = profile.maxhr || (profile.age ? 220 - profile.age : 185);
-          const existing = (freshRef.activities || []).reduce((m, a) => { m[String(a.id)] = a; return m; }, {});
-          const toStream = (freshRef.activities || []).filter(a =>
-            a.average_heartrate && new Date(a.start_date).getTime() / 1000 > cutoff90
-          );
-          console.log(`[stream] will fetch ${toStream.length} streams for ${freshRef.name}`);
-          let updated = false;
-          for (const act of toStream) {
-            if (act.hr_zones) continue; // already have it
-            await new Promise(r => setTimeout(r, 300));
-            const stream = await fetchHRStream(act.id, token);
-            if (stream) {
-              const zones = calcZonesFromStream(stream.hr, stream.time, maxHR);
-              if (zones) { act.hr_zones = zones; updated = true; }
-            }
-          }
-          if (updated) {
-            await dbUpsert(freshRef.id, { activities: freshRef.activities });
-            const zoneCount = freshRef.activities.filter(a=>a.hr_zones).length;
-      console.log(`[stream] background fetch complete for ${freshRef.name} — ${zoneCount} activities have hr_zones`);
-          }
-        } catch(e) { console.log('[stream] background fetch error:', e.message); }
-      })();
+      fetchStreamsInBackground({ ...ref, activities: mergedActs, profile: mergedProfile });
     } catch(e) { send(res, 500, { error: e.message }); }
     return;
   }
