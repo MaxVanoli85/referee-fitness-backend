@@ -1017,6 +1017,32 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── /coach/validate-all — validate every draft for a given month ──────────
+  if (req.method === 'POST' && req.url === '/coach/validate-all') {
+    if (!checkPin(req)) { send(res, 401, { error: 'Unauthorized — wrong PIN' }); return; }
+    try {
+      const { monthKey } = await readBody(req);
+      if (!monthKey) { send(res, 400, { error: 'Missing monthKey' }); return; }
+      const refs = await dbGetAll();
+      let validated = 0;
+      const names = [];
+      for (const ref of refs) {
+        const fb = (ref.feedback || {})[monthKey];
+        // Only touch drafts that aren't validated yet and actually have content
+        if (fb && !fb.validated && (fb.load || fb.fitness || fb.recommendation || fb.notes)) {
+          const updated = Object.assign({}, ref.feedback);
+          updated[monthKey] = { ...fb, draft: false, validated: true, validatedAt: new Date().toISOString() };
+          await dbUpsert(ref.id, { feedback: updated });
+          validated++;
+          names.push(ref.name);
+        }
+      }
+      console.log(`[feedback] validate-all ${monthKey}: ${validated} validated`);
+      send(res, 200, { ok: true, validated, names });
+    } catch(e) { send(res, 500, { error: e.message }); }
+    return;
+  }
+
   // ── /referee/push ────────────────────────────────────────────────
   if (req.method === 'POST' && req.url === '/referee/push') {
     try {
