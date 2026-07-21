@@ -270,12 +270,11 @@ INSTRUCTIONS:
 - Utilise le tutoiement (tu/ton/tes) — jamais le vouvoiement
 - Mentionne explicitement si l'objectif Z5 (≥5 min/semaine) est atteint ou non
 - Si le mois est juin, tiens compte de la coupure des 2 dernières semaines et des tests du 13 juin
-- Rédige exactement 4 champs courts en français, au format JSON:
+- Rédige exactement 3 champs courts en français, au format JSON:
 {
   "load": "évaluation de la charge en 1 phrase (ex: Charge bien dosée avec X séances dont Y matchs)",
   "fitness": "état de forme en 1 phrase basé sur le ratio A:C et le ressenti",
-  "recommendation": "1 recommandation concrète et actionnable pour le mois suivant",
-  "notes": "1 observation complémentaire si pertinente, sinon chaîne vide"
+  "recommendation": "1 recommandation concrète et actionnable pour le mois suivant"
 }
 Réponds UNIQUEMENT avec le JSON, sans texte avant ou après.`;
 
@@ -1029,7 +1028,7 @@ const server = http.createServer(async (req, res) => {
       for (const ref of refs) {
         const fb = (ref.feedback || {})[monthKey];
         // Only touch drafts that aren't validated yet and actually have content
-        if (fb && !fb.validated && (fb.load || fb.fitness || fb.recommendation || fb.notes)) {
+        if (fb && !fb.validated && (fb.load || fb.fitness || fb.recommendation)) {
           const updated = Object.assign({}, ref.feedback);
           updated[monthKey] = { ...fb, draft: false, validated: true, validatedAt: new Date().toISOString() };
           await dbUpsert(ref.id, { feedback: updated });
