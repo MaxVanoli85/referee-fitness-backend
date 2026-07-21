@@ -146,6 +146,29 @@ async function generateRefereeFeedback(ref, monthKey, prevMonthKey) {
     return 'Z5';
   }
 
+  // Zone-aware classification from exact HR stream — mirrors the frontend logic.
+  function zoneCat(a) {
+    const z = a.hr_zones;
+    if (!z || z.length !== 5) return null;
+    const secs = z.reduce((s,v)=>s+(v||0),0);
+    if (secs < 300) return null;
+    const mins = secs/60;
+    const pct = z.map(s=>(s||0)/secs);
+    const z5min = (z[4]||0)/60, z4min = (z[3]||0)/60;
+    const hiFrac = pct[3]+pct[4];
+    const midFrac = pct[2]+pct[3]+pct[4];
+    const easyFrac = pct[0]+pct[1];
+    if (mins>=70 && mins<=140 && midFrac>=0.55 && (z4min+z5min)>=8) return 'match';
+    if (z5min>=4 || hiFrac>=0.20 || (z5min>=2 && z4min>=6)) return 'high';
+    if (pct[2]>=0.30 && hiFrac<0.20) return 'medium';
+    if (midFrac>=0.35 && easyFrac<0.70) return 'medium';
+    if (pct[0]>=0.50 && hiFrac<0.03) return 'recovery';
+    if (easyFrac>=0.85 && hiFrac<0.03 && pct[1]<0.55) return 'recovery';
+    if (easyFrac>=0.70 && pct[1]>=0.35 && mins>=40) return 'endurance';
+    if (easyFrac>=0.70) return mins>=40 ? 'endurance' : 'recovery';
+    return null;
+  }
+
   function catKey(a) {
     if (a._cat) return a._cat;
     const name = (a.name||'').toLowerCase();
@@ -154,6 +177,8 @@ async function generateRefereeFeedback(ref, monthKey, prevMonthKey) {
     const ALT = ['Ride','VirtualRide','Swim','Walk','Hike','Rowing','Elliptical','WeightTraining','Yoga','Pilates','Crossfit'];
     if (ALT.includes(a.type)||ALT.includes(a.sport_type)) return 'alternative';
     if (a.type==='WeightTraining'||a.sport_type==='WeightTraining') return 'strength';
+    const zc = zoneCat(a);
+    if (zc) return zc;
     const hr = a.average_heartrate||0;
     const dur = (a.moving_time||a.elapsed_time||0)/60;
     if (hr>=155&&dur>=75&&dur<=130) return 'match';
