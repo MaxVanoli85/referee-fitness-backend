@@ -1086,6 +1086,27 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── /coach/reset-strava — unlink a referee's Strava account ───────────────
+  // Recovery tool: clears the Strava binding so the referee can reconnect via
+  // their personal invite link. Optionally wipes activities that belong to
+  // someone else (e.g. after a name-collision mix-up).
+  if (req.method === 'POST' && req.url === '/coach/reset-strava') {
+    if (!checkPin(req)) { send(res, 401, { error: 'Unauthorized' }); return; }
+    try {
+      const { refereeId, clearActivities } = await readBody(req);
+      if (!refereeId) { send(res, 400, { error: 'Missing refereeId' }); return; }
+      const ref = await dbGetById(refereeId);
+      if (!ref) { send(res, 404, { error: 'Referee not found' }); return; }
+      const fields = { token: null, refresh: null, expires: null, strava_id: null };
+      if (clearActivities) fields.activities = [];
+      await dbUpsert(refereeId, fields);
+      console.log(`[coach] Strava link reset for ${ref.name}`
+        + (clearActivities ? ' (activities cleared)' : ' (activities kept)'));
+      send(res, 200, { ok: true });
+    } catch(e) { send(res, 500, { error: e.message }); }
+    return;
+  }
+
   // ── /coach/remove-referee ────────────────────────────────────────
   if (req.method === 'POST' && req.url === '/coach/remove-referee') {
     if (!checkPin(req)) { send(res, 401, { error: 'Unauthorized' }); return; }
