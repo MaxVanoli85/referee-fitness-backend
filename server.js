@@ -538,6 +538,51 @@ async function dbGetByFirstName(firstName) {
   return all.find(r => normalize(r.name.split(' ')[0]) === fn) || null;
 }
 
+// ── Safe referee matching for a Strava athlete ─────────────────────────────
+// Rules, strictest first:
+//   1. Exact Strava ID  — always safe
+//   2. Exact full name  — only rows not already bound to another athlete
+//   3. First + last name
+//   4. First name alone — ONLY if exactly one candidate
+// Never binds to a row already linked to a different Strava account, and never
+// guesses between two referees who share a first name (e.g. two "Daniel"s).
+async function findRefereeForAthlete(athlete) {
+  const normalize = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
+  const sid = athlete && athlete.id;
+
+  if (sid) {
+    const byId = await dbGetByStravaId(sid);
+    if (byId) return { ref: byId, how: 'strava_id' };
+  }
+
+  const all   = await dbGetAll();
+  const first = normalize(athlete && athlete.firstname);
+  const last  = normalize(athlete && athlete.lastname);
+  const full  = (first + ' ' + last).trim();
+
+  // Only rows that are free, or already this athlete's
+  const free = all.filter(r => !r.strava_id || String(r.strava_id) === String(sid));
+
+  let cands = free.filter(r => normalize(r.name) === full);
+  if (cands.length === 1) return { ref: cands[0], how: 'full name' };
+
+  if (first && last) {
+    cands = free.filter(r => {
+      const parts = normalize(r.name).split(' ').filter(Boolean);
+      return parts.length >= 2 && parts[0] === first && parts[parts.length-1] === last;
+    });
+    if (cands.length === 1) return { ref: cands[0], how: 'first+last' };
+  }
+
+  if (first) {
+    cands = free.filter(r => normalize(r.name).split(' ')[0] === first);
+    if (cands.length === 1) return { ref: cands[0], how: 'first name' };
+    if (cands.length > 1)  return { ref: null, how: 'ambiguous', ambiguous: cands.map(c => c.name) };
+  }
+
+  return { ref: null, how: 'no match' };
+}
+
 async function dbUpsert(id, fields) {
   // PATCH existing row (return=minimal → 204 No Content, no body = less egress)
   const r = await sbRequest('PATCH',
@@ -889,29 +934,14 @@ const server = http.createServer(async (req, res) => {
           }
         }
       } else {
-        const normalize = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
-
-        // 1. Try by stravaId
-        let ref = await dbGetByStravaId(athlete?.id);
-
-        // 2. Try by firstname (accent-insensitive)
-        if (!ref && athlete?.firstname) {
-          ref = await dbGetByFirstName(athlete.firstname);
-        }
-
-        // 3. Try by full name match across all refs
-        if (!ref && athlete?.firstname) {
-          const all = await dbGetAll();
-          const stravaFull = normalize((athlete.firstname||'') + ' ' + (athlete.lastname||''));
-          const stravaFirst = normalize(athlete.firstname||'');
-          const stravaLast  = normalize(athlete.lastname||'');
-          ref = all.find(r => {
-            const parts = r.name.split(' ').map(normalize);
-            const dbFull = normalize(r.name);
-            return dbFull === stravaFull
-              || parts[0] === stravaFirst
-              || (stravaLast && parts[parts.length-1] === stravaLast && parts[0] === stravaFirst);
-          }) || null;
+        // Find the right referee slot for this Strava athlete.
+        // SAFETY: never bind to a row already linked to a DIFFERENT Strava account,
+        // and never guess when a name is ambiguous (e.g. two referees named Daniel).
+        const match = await findRefereeForAthlete(athlete);
+        let ref = match.ref;
+        if (match.ambiguous) {
+          console.log('[exchange] AMBIGUOUS name "' + (athlete?.firstname||'') + '" matches: '
+            + match.ambiguous.join(', ') + ' — creating separate slot instead of guessing');
         }
 
         if (ref) {
@@ -1115,11 +1145,16 @@ const server = http.createServer(async (req, res) => {
     try {
       const { stravaId, stravaFirstname, stravaLastname, activities, refereeId, profile } = await readBody(req);
       if (!stravaId || !activities) { send(res, 400, { error: 'Missing stravaId or activities' }); return; }
-      const normalize = s => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
       let ref = null;
       if (refereeId)      ref = await dbGetById(refereeId);
       if (!ref)           ref = await dbGetByStravaId(stravaId);
-      if (!ref && stravaFirstname) ref = await dbGetByFirstName(stravaFirstname);
+      if (!ref) {
+        // Safe name matching — won't steal a slot bound to another athlete,
+        // and won't guess between referees sharing a first name.
+        const m = await findRefereeForAthlete({ id: stravaId, firstname: stravaFirstname, lastname: stravaLastname });
+        if (m.ambiguous) console.log('[push] ambiguous name, using separate slot:', m.ambiguous.join(', '));
+        ref = m.ref;
+      }
       if (!ref) {
         const fullName = [stravaFirstname, stravaLastname].filter(Boolean).join(' ') || 'Athlete';
         const id = 'auto_' + stravaId;
