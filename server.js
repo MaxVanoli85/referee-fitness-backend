@@ -172,15 +172,45 @@ async function generateRefereeFeedback(ref, monthKey, prevMonthKey) {
   function catKey(a) {
     if (a._cat) return a._cat;
     const name = (a.name||'').toLowerCase();
-    const MATCH_KW = ['bgl','ph','d1','d2','d3','coupe','cdl','match','vs',' fc ','game'];
-    if (MATCH_KW.some(k=>name.includes(k))) return 'match';
+    // Match detection — mirrors the frontend logic
+    const PHRASES = ['bgl ligue','coupe','match','game','spiel','rencontre','versus','amical','friendly',
+      'united','sporting','racing','athletic','olympique','arbitrage','assistant'];
+    const TOKENS = ['bgl','ph','d1','d2','d3','cdl','vs','n1','n2','n3'];
+    const CLUB_PREFIX = /\b(fc|cs|us|sc|ca|as|fcm|cse|rm)\s+[a-zà-ÿ0-9]/i;
+    const CLUBS = ['jeunesse','fola','progres','progrès','etzella','differdange','dudelange','hostert',
+      'mondorf','rodange','wiltz','petange','pétange','hesperange','strassen','rosport',
+      'kaerjeng','käerjeng','bissen','grevenmacher','grevemacher','rumelange','schifflange',
+      'bettembourg','kehlen','mamer','steinfort','junglinster','beggen','lorentzweiler',
+      'muhlenbach','mühlenbach','titus','swift','victoria','una','avenir','union','minerva'];
+    const TRAINING = ['footing','course','run','running','récup','recup','sortie','entrainement','entraînement',
+      'fractionn','vma','intervalle','tempo','endurance','musculation','renfo','vélo','velo',
+      'natation','marche','yoga','étirement','etirement','échauffement','echauffement',
+      'séance','seance','physique','test','repos','jogging','trail','sprint','gym'];
+    const durMin = (a.moving_time || a.elapsed_time || 0) / 60;
+    function fixture() {
+      const raw = (a.name||'').trim();
+      if (!raw || TRAINING.some(w => name.includes(w))) return false;
+      const sep = /\s[-–—]\s/;
+      if (!sep.test(raw)) return false;
+      const parts = raw.split(sep).map(s=>s.trim()).filter(Boolean);
+      if (parts.length !== 2) return false;
+      if (!parts.every(p => /[a-zà-ÿ]{3,}/i.test(p))) return false;
+      return durMin >= 60 && durMin <= 150;
+    }
+    if (PHRASES.some(k => name.includes(k))) return 'match';
+    if (TOKENS.some(t => new RegExp('\\b'+t+'\\b','i').test(name))) return 'match';
+    if (/\b\d+\s*[-:]\s*\d+\b/.test(name)) return 'match';
+    if (CLUB_PREFIX.test(name)) return 'match';
+    if (CLUBS.some(c => name.includes(c))) return 'match';
+    if (fixture()) return 'match';
+
     const ALT = ['Ride','VirtualRide','Swim','Walk','Hike','Rowing','Elliptical','WeightTraining','Yoga','Pilates','Crossfit'];
     if (ALT.includes(a.type)||ALT.includes(a.sport_type)) return 'alternative';
     if (a.type==='WeightTraining'||a.sport_type==='WeightTraining') return 'strength';
     const zc = zoneCat(a);
     if (zc) return zc;
     const hr = a.average_heartrate||0;
-    const dur = (a.moving_time||a.elapsed_time||0)/60;
+    const dur = durMin;
     if (hr>=155&&dur>=75&&dur<=130) return 'match';
     if (hr>=155) return 'high';
     if (hr>=145&&dur<45) return 'high';
