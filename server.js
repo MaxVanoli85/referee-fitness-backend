@@ -1035,6 +1035,27 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── /coach/set-level — coach assigns role/level to a referee ──────────────
+  // Merges only role+level into the profile so referee-entered fields
+  // (age, height, weight, maxhr, picture) are never overwritten.
+  if (req.method === 'POST' && req.url === '/coach/set-level') {
+    if (!checkPin(req)) { send(res, 401, { error: 'Unauthorized' }); return; }
+    try {
+      const { refereeId, role, level } = await readBody(req);
+      if (!refereeId) { send(res, 400, { error: 'Missing refereeId' }); return; }
+      const ref = await dbGetById(refereeId);
+      if (!ref) { send(res, 404, { error: 'Referee not found: ' + refereeId }); return; }
+      const profile = Object.assign({}, ref.profile || {});
+      // Empty string clears the field; undefined leaves it untouched
+      if (role  !== undefined) profile.role  = role  || null;
+      if (level !== undefined) profile.level = level || null;
+      await dbUpsert(refereeId, { profile });
+      console.log(`[coach] level set for ${ref.name}: ${role || '—'} / ${level || '—'}`);
+      send(res, 200, { ok: true, profile });
+    } catch(e) { send(res, 500, { error: e.message }); }
+    return;
+  }
+
   // ── /coach/remove-referee ────────────────────────────────────────
   if (req.method === 'POST' && req.url === '/coach/remove-referee') {
     if (!checkPin(req)) { send(res, 401, { error: 'Unauthorized' }); return; }
