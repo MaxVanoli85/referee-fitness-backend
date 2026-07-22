@@ -507,8 +507,19 @@ async function dbGetAll(force) {
   return _dbCache.data;
 }
 
-// Invalidate cache after any write
+// Invalidate cache — used for rare structural changes (insert / delete)
 function invalidateDbCache() { _dbCache = { data: null, ts: 0 }; }
+
+// Surgically update one cached row instead of dropping the whole cache.
+// Mirrors what a Supabase PATCH does, so the cache stays both warm and correct.
+// Used for frequent writes (activity syncs, stream saves, feedback) so a busy
+// period doesn't force repeated full-table refetches.
+function patchDbCache(id, fields) {
+  if (!_dbCache.data) return;                       // nothing cached — nothing to do
+  const row = _dbCache.data.find(r => r.id === id);
+  if (!row) { invalidateDbCache(); return; }        // unknown row — be safe
+  Object.assign(row, fields);
+}
 
 async function dbGetByStravaId(stravaId) {
   const r = await sbRequest('GET', `/referees?strava_id=eq.${stravaId}&select=*`);
@@ -539,9 +550,11 @@ async function dbUpsert(id, fields) {
     const check = await sbRequest('GET', `/referees?id=eq.${encodeURIComponent(id)}&select=id`);
     if (!check.body || !check.body.length) {
       await sbRequest('POST', '/referees', { id, name: fields.name || 'Athlete', ...fields });
+      invalidateDbCache();   // new row appeared — cache shape changed
+      return true;
     }
   }
-  invalidateDbCache();
+  patchDbCache(id, fields);  // keep cache warm rather than dropping it
   return true;
 }
 
@@ -716,7 +729,7 @@ async function fetchStreamsInBackground(ref) {
         `/referees?id=eq.${encodeURIComponent(refToUse.id)}`,
         { activities }
       );
-      invalidateDbCache();
+      patchDbCache(refToUse.id, { activities });
       console.log(`[stream] Supabase save status: ${saveResult.status}`);
       if (saveResult.status !== 200 && saveResult.status !== 204) {
         console.log('[stream] Supabase save error:', JSON.stringify(saveResult.body)?.slice(0,200));
