@@ -546,6 +546,18 @@ async function dbGetByFirstName(firstName) {
 //   4. First name alone — ONLY if exactly one candidate
 // Never binds to a row already linked to a different Strava account, and never
 // guesses between two referees who share a first name (e.g. two "Daniel"s).
+// Strava-derived identity fields (photo, city, country) for the account being
+// linked. Refreshed on every connect so a row can never keep a previous
+// holder's photo after a mix-up.
+function mergeStravaIdentity(ref, athlete) {
+  const p = Object.assign({}, (ref && ref.profile) || {});
+  const pic = athlete && (athlete.profile || athlete.profile_medium);
+  if (pic) p.picture = pic;
+  if (athlete && athlete.city)    p.city    = athlete.city;
+  if (athlete && athlete.country) p.country = athlete.country;
+  return p;
+}
+
 async function findRefereeForAthlete(athlete) {
   const normalize = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
   const sid = athlete && athlete.id;
@@ -918,14 +930,14 @@ const server = http.createServer(async (req, res) => {
         let ref = await dbGetById(refereeId);
         console.log('[exchange] found ref by id:', ref?.id, ref?.name);
         if (ref) {
-          await dbUpsert(ref.id, { token: access_token, refresh: refresh_token, expires: expires_at, strava_id: athlete?.id });
+          await dbUpsert(ref.id, { token: access_token, refresh: refresh_token, expires: expires_at, strava_id: athlete?.id, profile: mergeStravaIdentity(ref, athlete) });
           console.log('[exchange] token saved for', ref.name);
         } else {
           console.log('[exchange] no ref found for id:', refereeId, '— trying by stravaId');
           // Try to find by stravaId as fallback
           let refByStrava = await dbGetByStravaId(athlete?.id);
           if (refByStrava) {
-            await dbUpsert(refByStrava.id, { token: access_token, refresh: refresh_token, expires: expires_at, strava_id: athlete?.id });
+            await dbUpsert(refByStrava.id, { token: access_token, refresh: refresh_token, expires: expires_at, strava_id: athlete?.id, profile: mergeStravaIdentity(refByStrava, athlete) });
             console.log('[exchange] ✓ token saved via stravaId for', refByStrava.name);
           } else {
             console.log('[exchange] no ref found at all — creating auto slot');
@@ -956,6 +968,7 @@ const server = http.createServer(async (req, res) => {
               refresh:          refresh_token,
               expires:          expires_at,
               strava_id:        athlete?.id,
+              profile:          mergeStravaIdentity(ref, athlete),
               activities:       autoSlot.activities?.length ? autoSlot.activities : ref.activities,
               monthly_feelings: Object.assign({}, autoSlot.monthly_feelings||{}, ref.monthly_feelings||{}),
               rpe:              Object.assign({}, autoSlot.rpe||{}, ref.rpe||{}),
@@ -967,7 +980,7 @@ const server = http.createServer(async (req, res) => {
             invalidateDbCache();
             console.log('[exchange] auto slot merged and deleted');
           } else {
-            await dbUpsert(ref.id, { token: access_token, refresh: refresh_token, expires: expires_at, strava_id: athlete?.id });
+            await dbUpsert(ref.id, { token: access_token, refresh: refresh_token, expires: expires_at, strava_id: athlete?.id, profile: mergeStravaIdentity(ref, athlete) });
             console.log('[exchange] ✓ token saved for', ref.name);
           }
         } else {
@@ -1098,7 +1111,17 @@ const server = http.createServer(async (req, res) => {
       const ref = await dbGetById(refereeId);
       if (!ref) { send(res, 404, { error: 'Referee not found' }); return; }
       const fields = { token: null, refresh: null, expires: null, strava_id: null };
-      if (clearActivities) fields.activities = [];
+      // Strava-derived identity (photo/city/country) belongs to the account being
+      // unlinked — always clear it, or a previous holder's photo lingers.
+      const profile = Object.assign({}, ref.profile || {});
+      delete profile.picture; delete profile.city; delete profile.country;
+      if (clearActivities) {
+        // Data belonged to someone else — drop their self-entered figures too,
+        // but keep the coach-assigned role/level.
+        delete profile.age; delete profile.height; delete profile.weight; delete profile.maxhr;
+        fields.activities = [];
+      }
+      fields.profile = profile;
       await dbUpsert(refereeId, fields);
       console.log(`[coach] Strava link reset for ${ref.name}`
         + (clearActivities ? ' (activities cleared)' : ' (activities kept)'));
