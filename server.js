@@ -547,6 +547,7 @@ async function dbUpsert(id, fields) {
 
 async function dbInsert(row) {
   const r = await sbRequest('POST', '/referees', row);
+  invalidateDbCache();
   return r.body;
 }
 
@@ -715,6 +716,7 @@ async function fetchStreamsInBackground(ref) {
         `/referees?id=eq.${encodeURIComponent(refToUse.id)}`,
         { activities }
       );
+      invalidateDbCache();
       console.log(`[stream] Supabase save status: ${saveResult.status}`);
       if (saveResult.status !== 200 && saveResult.status !== 204) {
         console.log('[stream] Supabase save error:', JSON.stringify(saveResult.body)?.slice(0,200));
@@ -919,6 +921,7 @@ const server = http.createServer(async (req, res) => {
             await dbUpsert(ref.id, merged);
             // Delete the auto slot
             await sbRequest('DELETE', `/referees?id=eq.${encodeURIComponent(autoId)}`);
+            invalidateDbCache();
             console.log('[exchange] auto slot merged and deleted');
           } else {
             await dbUpsert(ref.id, { token: access_token, refresh: refresh_token, expires: expires_at, strava_id: athlete?.id });
@@ -1025,6 +1028,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const { id } = await readBody(req);
       await sbRequest('DELETE', `/referees?id=eq.${encodeURIComponent(id)}`);
+      invalidateDbCache();
       send(res, 200, { ok: true });
     } catch(e) { send(res, 500, { error: e.message }); }
     return;
