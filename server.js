@@ -563,7 +563,7 @@ async function findRefereeForAthlete(athlete) {
   const sid = athlete && athlete.id;
 
   if (sid) {
-    const byId = await dbGetByStravaId(sid);
+    const byId = await dbGetByStravaIdLite(sid);
     if (byId) return { ref: byId, how: 'strava_id' };
   }
 
@@ -593,6 +593,21 @@ async function findRefereeForAthlete(athlete) {
   }
 
   return { ref: null, how: 'no match' };
+}
+
+// Lightweight fetches — everything except the heavy `activities` column.
+// A full row carries 18 months of activities with HR zones (100KB+); most
+// endpoints only need a profile or feedback field, so pulling it all is waste.
+const LITE_COLS = 'id,name,strava_id,token,refresh,expires,profile,feedback,monthly_feelings,rpe,last_sync';
+
+async function dbGetByIdLite(id) {
+  const r = await sbRequest('GET', `/referees?id=eq.${encodeURIComponent(id)}&select=${LITE_COLS}`);
+  return (r.body && r.body[0]) || null;
+}
+
+async function dbGetByStravaIdLite(stravaId) {
+  const r = await sbRequest('GET', `/referees?strava_id=eq.${stravaId}&select=${LITE_COLS}`);
+  return (r.body && r.body[0]) || null;
 }
 
 async function dbUpsert(id, fields) {
@@ -927,7 +942,7 @@ const server = http.createServer(async (req, res) => {
       if (r.status !== 200) { send(res, 502, { error: 'Strava exchange failed', detail: r.body }); return; }
       const { access_token, refresh_token, expires_at, athlete } = r.body;
       if (refereeId) {
-        let ref = await dbGetById(refereeId);
+        let ref = await dbGetByIdLite(refereeId);
         console.log('[exchange] found ref by id:', ref?.id, ref?.name);
         if (ref) {
           await dbUpsert(ref.id, { token: access_token, refresh: refresh_token, expires: expires_at, strava_id: athlete?.id, profile: mergeStravaIdentity(ref, athlete) });
@@ -935,7 +950,7 @@ const server = http.createServer(async (req, res) => {
         } else {
           console.log('[exchange] no ref found for id:', refereeId, '— trying by stravaId');
           // Try to find by stravaId as fallback
-          let refByStrava = await dbGetByStravaId(athlete?.id);
+          let refByStrava = await dbGetByStravaIdLite(athlete?.id);
           if (refByStrava) {
             await dbUpsert(refByStrava.id, { token: access_token, refresh: refresh_token, expires: expires_at, strava_id: athlete?.id, profile: mergeStravaIdentity(refByStrava, athlete) });
             console.log('[exchange] ✓ token saved via stravaId for', refByStrava.name);
@@ -986,7 +1001,7 @@ const server = http.createServer(async (req, res) => {
         } else {
           // No match found — create auto slot with token so sync works
           const autoId = 'auto_' + athlete?.id;
-          const existing = await dbGetById(autoId);
+          const existing = await dbGetByIdLite(autoId);
           const name = [athlete?.firstname, athlete?.lastname].filter(Boolean).join(' ') || 'Athlete';
           if (existing) {
             await dbUpsert(autoId, { token: access_token, refresh: refresh_token, expires: expires_at });
@@ -1086,7 +1101,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const { refereeId, role, level } = await readBody(req);
       if (!refereeId) { send(res, 400, { error: 'Missing refereeId' }); return; }
-      const ref = await dbGetById(refereeId);
+      const ref = await dbGetByIdLite(refereeId);
       if (!ref) { send(res, 404, { error: 'Referee not found: ' + refereeId }); return; }
       const profile = Object.assign({}, ref.profile || {});
       // Empty string clears the field; undefined leaves it untouched
@@ -1108,7 +1123,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const { refereeId, clearActivities } = await readBody(req);
       if (!refereeId) { send(res, 400, { error: 'Missing refereeId' }); return; }
-      const ref = await dbGetById(refereeId);
+      const ref = await dbGetByIdLite(refereeId);
       if (!ref) { send(res, 404, { error: 'Referee not found' }); return; }
       const fields = { token: null, refresh: null, expires: null, strava_id: null };
       // Strava-derived identity (photo/city/country) belongs to the account being
@@ -1148,7 +1163,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const { refereeId, monthKey, feedback } = await readBody(req);
       if (!refereeId || !monthKey) { send(res, 400, { error: 'Missing refereeId or monthKey' }); return; }
-      const ref = await dbGetById(refereeId);
+      const ref = await dbGetByIdLite(refereeId);
       if (!ref) { send(res, 404, { error: 'Referee not found: ' + refereeId }); return; }
       const existing = ref.feedback || {};
       existing[monthKey] = { ...feedback, updatedAt: new Date().toISOString() };
@@ -1244,8 +1259,8 @@ const server = http.createServer(async (req, res) => {
       const { stravaId, activityId, rpe, refereeId } = await readBody(req);
       if (!activityId) { send(res, 400, { error: 'Missing activityId' }); return; }
       let ref = null;
-      if (refereeId) ref = await dbGetById(refereeId);
-      if (!ref && stravaId) ref = await dbGetByStravaId(stravaId);
+      if (refereeId) ref = await dbGetByIdLite(refereeId);
+      if (!ref && stravaId) ref = await dbGetByStravaIdLite(stravaId);
       if (!ref) { send(res, 404, { error: 'Referee not found' }); return; }
       const existing = ref.rpe || {};
       existing[String(activityId)] = rpe;
@@ -1260,11 +1275,11 @@ const server = http.createServer(async (req, res) => {
     try {
       const { stravaId, weekKey, feeling } = await readBody(req);
       if (!stravaId || !weekKey) { send(res, 400, { error: 'Missing fields' }); return; }
-      let ref = await dbGetByStravaId(stravaId);
+      let ref = await dbGetByStravaIdLite(stravaId);
       if (!ref) {
         const id = 'auto_' + stravaId;
         await dbInsert({ id, name: 'Athlete', strava_id: stravaId, activities: [], profile: {}, feedback: {}, monthly_feelings: {}, rpe: {} });
-        ref = await dbGetByStravaId(stravaId);
+        ref = await dbGetByStravaIdLite(stravaId);
       }
       const existing = ref.monthly_feelings || {};
       existing[weekKey] = feeling;
@@ -1281,7 +1296,7 @@ const server = http.createServer(async (req, res) => {
       const stravaId = parseInt(url.searchParams.get('stravaId'));
       const monthKey = url.searchParams.get('monthKey');
       if (!stravaId || !monthKey) { send(res, 400, { error: 'Missing params' }); return; }
-      const ref = await dbGetByStravaId(stravaId);
+      const ref = await dbGetByStravaIdLite(stravaId);
       if (!ref) { send(res, 200, { feedback: null }); return; }
       send(res, 200, { feedback: (ref.feedback || {})[monthKey] || null });
     } catch(e) { send(res, 500, { error: e.message }); }
@@ -1320,12 +1335,12 @@ const server = http.createServer(async (req, res) => {
     try {
       const { stravaId, profile } = await readBody(req);
       if (!stravaId || !profile) { send(res, 400, { error: 'Missing fields' }); return; }
-      let ref = await dbGetByStravaId(stravaId);
+      let ref = await dbGetByStravaIdLite(stravaId);
       if (!ref && profile && profile.picture) {
         // Try auto-create if not found yet
         const id = 'auto_' + stravaId;
         await dbInsert({ id, name: 'Athlete', strava_id: stravaId, activities: [], profile: {}, feedback: {}, monthly_feelings: {}, rpe: {} });
-        ref = await dbGetByStravaId(stravaId);
+        ref = await dbGetByStravaIdLite(stravaId);
       }
       if (!ref) { send(res, 404, { error: 'Referee not found — sync activities first' }); return; }
       const merged = Object.assign({}, ref.profile || {},
@@ -1344,7 +1359,7 @@ const server = http.createServer(async (req, res) => {
       const url = new URL('http://x' + req.url);
       const stravaId = parseInt(url.searchParams.get('stravaId'));
       if (!stravaId) { send(res, 400, { error: 'Missing stravaId' }); return; }
-      const ref = await dbGetByStravaId(stravaId);
+      const ref = await dbGetByStravaIdLite(stravaId);
       if (!ref) { send(res, 200, { profile: null }); return; }
       send(res, 200, { profile: ref.profile || null });
     } catch(e) { send(res, 500, { error: e.message }); }
