@@ -298,13 +298,21 @@ CONTEXTE SAISONNIER:
 
 INSTRUCTIONS:
 - Utilise le tutoiement (tu/ton/tes) — jamais le vouvoiement
-- Mentionne explicitement si l'objectif Z5 (≥5 min/semaine) est atteint ou non
+- Mentionne si l'objectif Z5 (≥5 min/semaine) est atteint ou non
 - Si le mois est juin, tiens compte de la coupure des 2 dernières semaines et des tests du 13 juin
-- Rédige exactement 3 champs courts en français, au format JSON:
+
+STYLE DE RÉDACTION — IMPORTANT:
+- Par DÉFAUT, écris en MOTS-CLÉS courts séparés par " · " (point médian), PAS en phrases.
+  Exemples: "Charge optimale · 8 séances · 2 matchs" / "Forme solide · A:C 1,1 · ressenti positif" / "Maintenir le rythme · 1 séance Z5/semaine"
+- EXCEPTION — rédige une vraie PHRASE complète (1-2 phrases) UNIQUEMENT si le mois est inhabituel ou si quelque chose mérite une explication:
+  charge anormalement haute ou basse, blessure ou coupure probable, objectif Z5 raté plusieurs semaines, écart marqué vs mois précédent, ratio A:C en zone risque, ou contexte saisonnier (juin).
+  Dans ce cas, explique brièvement ce qui sort de l'ordinaire.
+- Chaque champ fait au maximum ~15 mots.
+- Rédige exactement 3 champs en français, au format JSON:
 {
-  "load": "évaluation de la charge en 1 phrase (ex: Charge bien dosée avec X séances dont Y matchs)",
-  "fitness": "état de forme en 1 phrase basé sur le ratio A:C et le ressenti",
-  "recommendation": "1 recommandation concrète et actionnable pour le mois suivant"
+  "load": "mots-clés sur la charge (ex: Charge optimale · 8 séances · 2 matchs) — ou phrase si notable",
+  "fitness": "mots-clés sur la forme (ex: Bonne forme · A:C 1,1) — ou phrase si notable",
+  "recommendation": "mots-clés d'action (ex: Maintenir · +1 séance Z5) — ou phrase si notable"
 }
 Réponds UNIQUEMENT avec le JSON, sans texte avant ou après.`;
 
@@ -1166,7 +1174,9 @@ const server = http.createServer(async (req, res) => {
       const ref = await dbGetByIdLite(refereeId);
       if (!ref) { send(res, 404, { error: 'Referee not found: ' + refereeId }); return; }
       const existing = ref.feedback || {};
-      existing[monthKey] = { ...feedback, updatedAt: new Date().toISOString() };
+      // A coach editing and saving a report is an explicit approval of its content,
+      // so it becomes validated (visible to referee + CAF) and is no longer a draft.
+      existing[monthKey] = { ...feedback, draft: false, validated: true, updatedAt: new Date().toISOString() };
       await dbUpsert(refereeId, { feedback: existing });
       send(res, 200, { ok: true });
     } catch(e) { send(res, 500, { error: e.message }); }
