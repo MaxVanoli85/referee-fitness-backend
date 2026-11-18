@@ -568,7 +568,7 @@ function mergeStravaIdentity(ref, athlete) {
 
 async function findRefereeForAthlete(athlete) {
   const normalize = s => (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim();
-  const sid = athlete && athlete.id;
+  const sid = athlete && (athlete.id_str || athlete.id);
 
   if (sid) {
     const byId = await dbGetByStravaIdLite(sid);
@@ -887,7 +887,9 @@ async function syncRefereeActivities(ref) {
     });
     if (!Array.isArray(r) || !r.length) break;
     all = all.concat(r.map(a => ({
-      id: a.id, name: a.name, type: a.type, sport_type: a.sport_type,
+      // Prefer Strava's id_str: JS numbers lose precision above 2^53, so a future
+      // 64-bit activity id would be silently corrupted if read from the numeric field.
+      id: a.id_str || String(a.id), name: a.name, type: a.type, sport_type: a.sport_type,
       start_date: a.start_date, start_date_local: a.start_date_local,
       elapsed_time: a.elapsed_time, moving_time: a.moving_time,
       distance: a.distance, average_heartrate: a.average_heartrate, max_heartrate: a.max_heartrate
@@ -949,6 +951,9 @@ const server = http.createServer(async (req, res) => {
       const r = await stravaPost({ client_id: CLIENT_ID, client_secret: CLIENT_SECRET, code, grant_type: 'authorization_code' });
       if (r.status !== 200) { send(res, 502, { error: 'Strava exchange failed', detail: r.body }); return; }
       const { access_token, refresh_token, expires_at, athlete } = r.body;
+      // Use Strava's string id so a future 64-bit athlete id can't be corrupted by
+      // JS number precision. One line here protects every athlete?.id use below.
+      if (athlete && athlete.id_str) athlete.id = athlete.id_str;
       if (refereeId) {
         let ref = await dbGetByIdLite(refereeId);
         console.log('[exchange] found ref by id:', ref?.id, ref?.name);
